@@ -1,5 +1,4 @@
 
-  
 ############ Mécanisme mar dans  support data ####################
 
 # sink("mar_support.txt")
@@ -62,25 +61,13 @@ support2_data <- as.data.frame(lapply(support2, function(col) {
 
 
 mydata <- support2_data[,c("d.time","death","age","sex", "income", "dzgroup","num.co","meanbp","hrt", "crea", "sod","temp")]
-
-
-
-
-
 mydata$meanbp <- ifelse(mydata$meanbp == 0, NA, mydata$meanbp)
 mydata$hrt <- ifelse(mydata$hrt == 0 | mydata$hrt == 300, NA, mydata$hrt)
 
 
 
 ### Données d'études 
-
-
-
 fulldata <- mydata[complete.cases(mydata),] 
-
-
-
-
 dim(fulldata)
 
 
@@ -97,15 +84,11 @@ levels(fulldata$income) <- c("<$11k", "$11-$25k",  "$25-$50k" ,  ">$50k")
 fulldata$d.time <- fulldata$d.time/(30.4375*3) # Temps en trimestre
 #fulldata$d.time <- fulldata$d.time/365.25 # Temps en année
 
-
-
-
 summary(fulldata)
 
 
 
 ## Génération de données manquantes sous MAR avec mice
-
 ### Transformation de la variable `income` en variable indicatrice
 
 
@@ -141,15 +124,13 @@ data_dummies <- fulldata %>%
 
 # Utilisation de la fonction ampute  (MAR)
 
-
+set.seed(123)
 mardata <- ampute(data_dummies,
                   prop=0.3,
                   patterns = matrix(c(rep(1,ncol(data_dummies)-4),rep(0,4)), 
                                     nrow = 1), 
                   mech = "MAR", 
                   weights = c(rep(1,ncol(data_dummies)-4),rep(0,4)))$amp
-
-
 
 
 mardata <- mardata %>%
@@ -217,7 +198,6 @@ mardata$meanbp2 <- mardata$meanbp^2
 mardata$hrt2 <- mardata$hrt^2
 mardata$temp2 <- mardata$temp^2
 mardata$sqrt_crea <- sqrt(mardata$crea)
-
 mardata$R.income <- as.factor(ifelse(is.na(mardata$income),0,1))
 
 
@@ -227,9 +207,6 @@ mardata$R.income <- as.factor(ifelse(is.na(mardata$income),0,1))
 
 
 (sum(fulldata$death ==0)/nrow(fulldata))*100 #  censure
-
-
-
 (sum(is.na(mardata$income))/nrow(mardata))*100 # manquante
 
 
@@ -241,17 +218,6 @@ mardata$R.income <- as.factor(ifelse(is.na(mardata$income),0,1))
 
 
 
-extract_linear_terms <- function(cox_model) {
-  model_summary <- summary(cox_model)
-  results_table <- as.data.frame(model_summary$coefficients)
-  results_table$term <- rownames(results_table)
-  linear_terms <- results_table[grep("linear|^(?!.*nonlin)", results_table$term, perl = TRUE), ]
-  #row.names(linear_terms) <- NULL
-  return(linear_terms)
-}
-
-
-
 
 bias_relative <- function(value,hat_estimate){
   return(((hat_estimate - value)/value)*100)
@@ -260,39 +226,61 @@ bias_relative <- function(value,hat_estimate){
 
 
 
-full.mod <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +  
-                    temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), data = fulldata, 
-                  tt = function(x, t, ...) pspline(x + t, df = 3))
-
-
-
-
-
-
-
-
-
-out.full <- extract_linear_terms(full.mod)
-
-
-
-
-
-
-
-
-result.full <- cbind(
-  "exp(coef)" = exp(out.full[,c("coef")]),
-  "lower.95" = exp(out.full[,c("coef")] -qnorm(0.975) *out.full[,c("se2")]),
-  "upper.95" = exp(out.full[,c("coef")] +qnorm(0.975)*out.full[,c("se2")]),
-  "Pr(>|z|)" =  2 * (1 - pnorm(abs(out.full[,c("coef")]/out.full[,c("se2")]))),
-  "CI_width" = 2*qnorm(0.975)*out.full[,c("se2")]
+full.mod <- coxph(
+  formula = Surv(d.time, death == 1) ~ income + sex + sod +  
+    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+    num.co + age +
+    num.co:d.time + age:d.time + 
+    strata(dzgroup),
+  data = fulldata
 )
 
 
 
+extract_full_mcar_iwp <- function(cox_model) {
+  # Vérification
+  if (!inherits(cox_model, "coxph")) {
+    stop("L'objet fourni n'est pas un modèle de type 'coxph'.")
+  }
+  
+  # Extraire le résumé du modèle
+  mod.sum <- summary(cox_model)
+  
+  # Vérifie si des erreurs robustes sont présentes
+  colnames_coef <- colnames(mod.sum$coefficients)
+  se_col <- if ("robust se" %in% colnames_coef) "robust se" else "se(coef)"
+  
+  # Extraire coefficients et SE appropriés
+  coef_est <- mod.sum$coefficients[, "coef"]
+  se_est   <- mod.sum$coefficients[, se_col]
+  
+  # Calculs
+  lower_ci <- coef_est - qnorm(0.975) * se_est
+  upper_ci <- coef_est + qnorm(0.975) * se_est
+  p_value  <- 2 * (1 - pnorm(abs(coef_est / se_est)))
+  ci_width <- 2 * qnorm(0.975) * se_est
+  
+  # Construction du tableau
+  result <- data.frame(
+    "exp(coef)" = exp(coef_est),
+    "lower.95"  = exp(lower_ci),
+    "upper.95"  = exp(upper_ci),
+    "Pr(>|z|)"  = p_value,
+    "CI_width"  = ci_width,
+    check.names = FALSE
+  )
+  
+  return(result)
+}
 
-rownames(result.full) <- rownames(out.full)
+
+
+
+
+
+
+result.full <- extract_full_mcar_iwp(full.mod)
+result.full$bias <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = result.full[,"exp(coef)"])
 result.full
 
 
@@ -303,42 +291,25 @@ result.full
 ## Completes cases anlysis: (MCAR)
 
 
-mod.mcar <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +  
-                    temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), data = na.omit(mardata), 
-                  tt = function(x, t, ...) pspline(x + t, df = 3))
-
-
-
-
-
-
-
-
-
-
-
-
-out.mcar <- extract_linear_terms(mod.mcar)
-
-
-
-
-
-
-# Utilisation des erreurs standard pénalisées
-
-
-result.cc <- cbind(
-  "exp(coef)" = exp(out.mcar[,c("coef")]),
-  "lower.95" = exp(out.mcar[,c("coef")] -qnorm(0.975) *out.mcar[,c("se2")]),
-  "upper.95" = exp(out.mcar[,c("coef")] +qnorm(0.975)*out.mcar[,c("se2")]),
-  "Pr(>|z|)" =  2 * (1 - pnorm(abs(out.mcar[,c("coef")]/out.mcar[,c("se2")]))),
-  "bias" = bias_relative(result.full[,1],hat_estimate = exp(out.mcar[,c("coef")])),
-  "CI_width" = 2*qnorm(0.975)*out.mcar[,c("se2")]
+mod.mcar <- coxph(
+  formula = Surv(d.time, death == 1) ~ income + sex + sod +  
+    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+    num.co + age +
+    num.co:d.time + age:d.time + 
+    strata(dzgroup),
+  data = na.omit(mardata)
 )
 
-rownames(result.cc) <- rownames(out.full)
+
+
+
+result.cc <- extract_full_mcar_iwp(mod.mcar)
+result.cc$bias <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = result.cc[,"exp(coef)"])
 result.cc
+
+
+
+
 
 
 
@@ -356,11 +327,18 @@ result.cc
 
 
 
-kappa = 0.95 # paramètre de compromis
-
+set.seed(312)
 work.model <- glm(R.income ~ d.time + death + age + sex +  sod +  temp +
                     dzgroup + num.co + hrt +crea + meanbp, data = mardata, family = binomial)
 predicted <-  pmax(pmin(predict(work.model, type = "response"), 0.99), 0.01)
+
+
+## paramètre de compromis
+
+
+# kappa = 1  
+# kappa = 0.95
+kappa = 0.9
 
 
 
@@ -374,7 +352,7 @@ mardata$w_corrected <- ifelse(
 
 
 
-# Poids classique pour les observations manquantes selon  iwp standard
+# Poids classique pour les observation manquantes selon  iwp standard
 
 
 
@@ -391,14 +369,11 @@ mardata$w_standard <- ifelse(
 
 
 summary(mardata[mardata$R.income == 0, c("w_corrected", "w_standard")])
-
-
-
 summary(mardata[mardata$R.income == 1, c("w_corrected", "w_standard")])
 
 
 
-# Disttribution du poids pondéré vs poids standard
+# Disttribution du poids pondérée vs poids standard
 
 
 
@@ -435,8 +410,10 @@ gridExtra::grid.arrange(grobs = list( p1,  p2), nrow = 2)
 
 
 mod.iwp <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +  
-                   temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), data = na.omit(mardata), 
-                 tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected,robust = TRUE)
+                   temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+                   num.co + age +
+                   num.co:d.time + age:d.time + 
+                   strata(dzgroup), data = na.omit(mardata), weights = w_corrected,robust = TRUE)
 
 
 
@@ -446,39 +423,14 @@ mod.iwp <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +
 
 
 
-
-out.iwp <- extract_linear_terms(mod.iwp)
-
-
-
-
-
-
-# Utilisation des erreurs stanadrd robustes
-
-
-result.iwp <- cbind(
-  "exp(coef)" = exp(out.iwp[,c("coef")]),
-  "lower.95" = exp(out.iwp[,c("coef")] - qnorm(0.975)*out.iwp[,c("se(coef)")]),
-  "upper.95" = exp(out.iwp[,c("coef")] + qnorm(0.975)*out.iwp[,c("se(coef)")]),
-  "Pr(>|z|)" = 2 * (1 - pnorm(abs(out.iwp[,c("coef")]/out.iwp[,c("se(coef)")]))),
-  "bias" = bias_relative(result.full[,1],hat_estimate = exp(out.iwp[,c("coef")])),
-  "CI_width" = 2*qnorm(0.975)*out.iwp[,c("se2")]
-)
-rownames(result.iwp) <- rownames(out.full)
+result.iwp <- extract_full_mcar_iwp(mod.iwp)
+result.iwp$bias <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = result.iwp[,"exp(coef)"])
 result.iwp
 
 
 
 
-
-
-
-
 ## Imputation multiple paramétrique (MAR)
-
-
-
 
 
 
@@ -490,8 +442,8 @@ mardata$cumhaz[!is.na(time_indices)] <- fit$cumhaz[time_indices[!is.na(time_indi
 
 
 
-
-M = 10 # Nombre d'imputation
+## Nombre d'imputation
+M = 100
 
 
 
@@ -507,10 +459,6 @@ mice_P_data <- mice(
 
 
 
-
-
-
-
 mice_P_data <-  lapply(1:M, function(m) {
   cbind(mardata[,c("d.time","sqrt_crea","temp2","meanbp2","hrt2")], mice::complete(mice_P_data, m))
 })
@@ -521,8 +469,10 @@ mice_P_data <- mitml::as.mitml.list(mice_P_data)
 
 
 miceP.model <- with(mice_P_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                         temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), 
-                                       tt = function(x, t, ...) pspline(x + t, df = 3)))
+                                         temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+                                         num.co + age +
+                                         num.co:d.time + age:d.time + 
+                                         strata(dzgroup)))
 
 
 
@@ -530,87 +480,79 @@ miceP.model <- with(mice_P_data, coxph(Surv(d.time, death ==1) ~ income + sex + 
 
 
 
-
-list_P_mod <- lapply(miceP.model,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-
-## Fonction qui combine les résulats selon la règle de Rubin (usage de Variances pénalisées)
-
+## Fonction qui combine les résulats selon la règle de Rubin 
 
 
 combine_MI <- function(manyresult) {
+  # Vérification
+  if (!all(sapply(manyresult, inherits, what = "coxph"))) {
+    stop("Tous les éléments de 'manyresult' doivent être des objets 'coxph'.")
+  }
+  
   estimates <- list()
-  penalize_variances <- list()
+  variances <- list()
   
   for (i in seq_along(manyresult)) {
-    estimates[[i]] <- manyresult[[i]][,c("coef")] 
-    penalize_variances[[i]] <- (manyresult[[i]][,c("se2")])^2  
+    mod.sum <- summary(manyresult[[i]])
+    
+    # Détecter si les erreurs sont robustes
+    se_col <- if ("robust se" %in% colnames(mod.sum$coefficients)) {
+      "robust se"
+    } else {
+      "se(coef)"
+    }
+    
+    estimates[[i]] <- mod.sum$coefficients[, "coef"]
+    variances[[i]] <- mod.sum$coefficients[, se_col]^2
   }
   
   estimates_mat <- do.call(rbind, estimates)
-  penalize_variances_mat <- do.call(rbind, penalize_variances)
+  variances_mat <- do.call(rbind, variances)
+  
   m <- length(manyresult)
   
-  # Combiner les estimations et les variances avec la règle de Rubin
-  Q_bar <- colMeans(estimates_mat)  # Moyenne des estimations
-  U_bar <- colMeans(penalize_variances_mat)  # Variance intra-imputation (robuste)
-  B <- apply(estimates_mat, 2, var) * (m / (m - 1))  # Variance inter-imputation
-  T <- U_bar + (1 + 1/m) * B  # Variance totale combinée
-  penalise_se <- sqrt(T)  # Erreur standard combinée
+  Q_bar <- colMeans(estimates_mat)
+  U_bar <- colMeans(variances_mat)
+  B <- apply(estimates_mat, 2, var) * (m / (m - 1))
+  T <- U_bar + (1 + 1 / m) * B
+  se <- sqrt(T)
   
-  # df: degrés de liberté de Rubin
-  df <- (m - 1)*(1 + U_bar/B)^2
+  # Degrés de liberté (formule classique de Rubin, 1987)
+  df <- (m - 1) * (T / B)^2
   
-  # Calcul des intervalles de confiance
-  CI_low_combined <- Q_bar - qt(0.975, df = df) * penalise_se
-  CI_up_combined <- Q_bar + qt(0.975, df = df) * penalise_se
+  # Intervalles de confiance
+  CI_low <- Q_bar - qt(0.975, df) * se
+  CI_up <- Q_bar + qt(0.975, df) * se
   
-  # Calcul des statistiques de test
-  z <- Q_bar / penalise_se
-  P.value <- 2 * (1 - pnorm(abs(z)))  # p-value bilatérale
+  # p-value (z-test approx)
+  z <- Q_bar / se
+  p_value <- 2 * (1 - pnorm(abs(z)))
   
-  # Résultat final sous forme de data.frame
-  mar.est <- data.frame(
-    Estimate = Q_bar,
-    penalise_se = penalise_se,
-    CI_low = CI_low_combined,
-    CI_up = CI_up_combined,
-    P.value = P.value
+  result <- data.frame(
+    "exp(coef)" = exp(Q_bar),
+    "lower.95" = exp(CI_low),
+    "upper.95" = exp(CI_up),
+    "Pr(>|z|)" = p_value,
+    check.names = FALSE,
+    row.names = rownames(estimates_mat)
   )
-  
-  return(mar.est)
+  return(result)
 }
 
 
 
 
 
-
-miceP.est <- combine_MI(list_P_mod)
-result_miceP.est <- cbind(exp(miceP.est [,c("Estimate","CI_low","CI_up")]), "P.value" = miceP.est[,"P.value"])
-
-result_miceP.est$biais <- bias_relative(result.full[,1],hat_estimate = result_miceP.est[,c("Estimate")])
-result_miceP.est[,"CI_width"] <- result_miceP.est[,"CI_up"] - result_miceP.est[,"CI_low"] 
-rownames(result_miceP.est) <- rownames(out.full)
-colnames(result_miceP.est) <- colnames(result.cc)
-result_miceP.est
-
-
-
-
-
+miceP.est <- combine_MI(miceP.model)
+miceP.est[,"CI_width"] <- miceP.est[,"upper.95"] - miceP.est[,"lower.95"] 
+miceP.est[,"bias"] <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = miceP.est[,"exp(coef)"])
+rownames(miceP.est) <- rownames(result.full)
+miceP.est
 
 
 
 
 ## Imputation multiple non paramétrique (MAR)
-
-
-
 
 
 RF_NP_data <- mice(
@@ -637,29 +579,19 @@ RF_NP_data <- mitml::as.mitml.list(RF_NP_data)
 
 
 rfNP.model <-  with(RF_NP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                        temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                      tt = function(x, t, ...) pspline(x + t, df = 3)))
+                                        temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+                                        num.co + age +
+                                        num.co:d.time + age:d.time + 
+                                        strata(dzgroup)))
 
 
 
 
-
-list.NP_mod <- lapply(rfNP.model,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-
-rfNP.est <- combine_MI(list.NP_mod)
-result_rfNP.est <- cbind(exp(rfNP.est [,c("Estimate","CI_low","CI_up")]), rfNP.est[,"P.value"])
-
-result_rfNP.est$biais <- bias_relative(result.full[,1],hat_estimate = result_rfNP.est[,c("Estimate")])
-result_rfNP.est[,"CI_width"] <- result_rfNP.est[,"CI_up"] - result_rfNP.est[,"CI_low"] 
-rownames(result_rfNP.est) <- rownames(out.full)
-colnames(result_rfNP.est) <- colnames(result.cc)
-
-result_rfNP.est
+rfNP.est <- combine_MI(rfNP.model)
+rfNP.est[,"CI_width"] <- rfNP.est[,"upper.95"] - rfNP.est[,"lower.95"] 
+rfNP.est[,"bias"] <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = rfNP.est[,"exp(coef)"])
+rownames(rfNP.est) <- rownames(result.full)
+rfNP.est
 
 
 
@@ -680,37 +612,19 @@ P_NP_data <- mitml::as.mitml.list(P_NP_data)
 
 
 
-
-
-
-
-
 P_NP_mod <- with(P_NP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                    temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                  tt = function(x, t, ...) pspline(x + t, df = 3)))
+                                    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+                                    num.co + age +
+                                    num.co:d.time + age:d.time + 
+                                    strata(dzgroup)))
 
 
 
-
-list.P_NP <- lapply(P_NP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-P_NP.est<- combine_MI(list.P_NP)
-result_P_NP.est <- cbind(exp(P_NP.est [,c("Estimate","CI_low","CI_up")]), "P.value" = P_NP.est[,"P.value"])
-
-result_P_NP.est$biais <- bias_relative(result.full[,1],hat_estimate = result_P_NP.est[,c("Estimate")])
-result_P_NP.est[,"CI_width"] <- result_P_NP.est[,"CI_up"] - result_P_NP.est[,"CI_low"] 
-rownames(result_P_NP.est) <- rownames(out.full)
-colnames(result_P_NP.est) <- colnames(result.cc)
-
-result_P_NP.est
-
-
-
-
+P_NP.est<- combine_MI(P_NP_mod)
+P_NP.est[,"CI_width"] <- P_NP.est[,"upper.95"] - P_NP.est[,"lower.95"] 
+P_NP.est[,"bias"] <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = P_NP.est[,"exp(coef)"])
+rownames(P_NP.est) <- rownames(result.full)
+P_NP.est
 
 
 
@@ -725,95 +639,37 @@ result_P_NP.est
 MI.P_IWP_data <-  lapply(1:M, function(m) {
   cbind(mice_P_data[[m]], mardata[, c("sqrt_crea","temp2","meanbp2","hrt2", "R.income", "w_corrected", "w_standard")])
 })
-
 MI.P_IWP_data <- mitml::as.mitml.list(MI.P_IWP_data)
 
 
-
-
-
 MI.P_IWP_mod <- with(MI.P_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                            temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected, robust = TRUE))
-
-
-
-
-list.P_IWP <- lapply(MI.P_IWP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
+                                            temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+                                            num.co + age +
+                                            num.co:d.time + age:d.time + 
+                                            strata(dzgroup),weights = w_corrected, robust = TRUE))
 
 
 
 
 
 
-## Fonction qui combine les résulats selon la règle de Rubin (usage de Variances robustes)
-
-
-combine_MI_IWP <- function(manyresult) {
-  estimates <- list()
-  robust_variances <- list()
-  
-  for (i in seq_along(manyresult)) {
-    estimates[[i]] <- manyresult[[i]][,c("coef")] 
-    robust_variances[[i]] <- (manyresult[[i]][,c("se(coef)")])^2  
-  }
-  
-  estimates_mat <- do.call(rbind, estimates)
-  robust_variances_mat <- do.call(rbind, robust_variances)
-  m <- length(manyresult)
-  
-  # Combiner les estimations et les variances avec la règle de Rubin
-  Q_bar <- colMeans(estimates_mat)  # Moyenne des estimations
-  U_bar <- colMeans(robust_variances_mat)  # Variance intra-imputation (robuste)
-  B <- apply(estimates_mat, 2, var) * (m / (m - 1))  # Variance inter-imputation
-  T <- U_bar + (1 + 1/m) * B  # Variance totale combinée
-  Robust_se <- sqrt(T)  # Erreur standard combinée
-  
-  # df: degrés de liberté de Rubin
-  df <- (m - 1)*(1 + U_bar/B)^2
-  
-  # Calcul des intervalles de confiance
-  CI_low_combined <- Q_bar - qt(0.975, df = df) * Robust_se
-  CI_up_combined <- Q_bar + qt(0.975, df = df) * Robust_se
-  
-  # Calcul des statistiques de test
-  z <- Q_bar / Robust_se
-  P.value <- 2 * (1 - pnorm(abs(z)))  # p-value bilatérale
-  
-  # Résultat final sous forme de data.frame
-  mar.est <- data.frame(
-    Estimate = Q_bar,
-    Robust_se = Robust_se,
-    CI_low = CI_low_combined,
-    CI_up = CI_up_combined,
-    P.value = P.value
-  )
-  
-  return(mar.est)
-}
 
 
 
 
 
 
-P_iwp.est <- combine_MI_IWP(manyresult = list.P_IWP)
-result_P_iwp.est <- cbind(exp(P_iwp.est[,c("Estimate","CI_low","CI_up")]),P_iwp.est[,c("P.value")])
-result_P_iwp.est$biais <- bias_relative(result.full[,1],hat_estimate = result_P_iwp.est[,c("Estimate")])
-result_P_iwp.est[,"CI_width"] <- result_P_iwp.est[,"CI_up"] - result_P_iwp.est[,"CI_low"] 
-rownames(result_P_iwp.est) <- rownames(out.full)
-colnames(result_P_iwp.est) <- colnames(result.cc)
-result_P_iwp.est
+
+P_iwp.est <- combine_MI(MI.P_IWP_mod)
+P_iwp.est[,"CI_width"] <- P_iwp.est[,"upper.95"] - P_iwp.est[,"lower.95"] 
+P_iwp.est[,"bias"] <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = P_iwp.est[,"exp(coef)"])
+rownames(P_iwp.est) <- rownames(result.full)
+P_iwp.est
 
 
 
 
 ## Hybride 3:  MI non paramétrique et IWP (MAR)
-
-
-
 
 MI.NP_IWP_data <-  lapply(1:M, function(m) {
   cbind(RF_NP_data[[m]], mardata[, c("sqrt_crea","temp2","meanbp2","hrt2","R.income", "w_corrected", "w_standard")])
@@ -824,36 +680,18 @@ MI.NP_IWP_data <- mitml::as.mitml.list(MI.NP_IWP_data)
 
 
 MI.NP_IWP_mod <-  with(MI.NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                               temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                             tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected, robust = TRUE))
+                                               temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+                                               num.co + age +
+                                               num.co:d.time + age:d.time + 
+                                               strata(dzgroup),weights = w_corrected, robust = TRUE))
 
 
 
-
-
-
-
-list.NP_IWP <- lapply(MI.NP_IWP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-
-
-
-
-NP_iwp.est <- combine_MI_IWP(manyresult = list.NP_IWP)
-
-result_NP_iwp.est <- cbind(exp(NP_iwp.est[,c("Estimate","CI_low","CI_up")]),NP_iwp.est[,c("P.value")])
-
-result_NP_iwp.est$biais <- bias_relative(result.full[,1],hat_estimate = result_NP_iwp.est[,c("Estimate")])
-result_NP_iwp.est[,"CI_width"] <- result_NP_iwp.est[,"CI_up"] - result_NP_iwp.est[,"CI_low"] 
-rownames(result_NP_iwp.est) <- rownames(out.full)
-colnames(result_NP_iwp.est) <- colnames(result.cc)
-result_NP_iwp.est
-
-
+NP_iwp.est <- combine_MI(MI.NP_IWP_mod)
+NP_iwp.est[,"CI_width"] <- NP_iwp.est[,"upper.95"] - NP_iwp.est[,"lower.95"] 
+NP_iwp.est[,"bias"] <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = NP_iwp.est[,"exp(coef)"])
+rownames(NP_iwp.est) <- rownames(result.full)
+NP_iwp.est
 
 
 
@@ -873,71 +711,54 @@ P_NP_IWP_data <- mitml::as.mitml.list(P_NP_IWP_data)
 
 
 P_NP_IWP_mod <- with(P_NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                            temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                          tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected, robust = TRUE))
+                                            temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+                                            num.co + age +
+                                            num.co:d.time + age:d.time + 
+                                            strata(dzgroup),weights = w_corrected, robust = TRUE))
 
 
 
 
-list.P_NP_IWP <- lapply(P_NP_IWP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-
-
-P_NP_iwp.est <- combine_MI_IWP(manyresult = list.P_NP_IWP)
-
-result_P_NP_iwp.est <- cbind(exp(P_NP_iwp.est[,c("Estimate","CI_low","CI_up")]),P_NP_iwp.est[,c("P.value")])
-
-result_P_NP_iwp.est$biais <- bias_relative(result.full[,1],hat_estimate = result_P_NP_iwp.est[,c("Estimate")])
-result_P_NP_iwp.est[,"CI_width"] <- result_P_NP_iwp.est[,"CI_up"] - result_P_NP_iwp.est[,"CI_low"] 
-rownames(result_P_NP_iwp.est) <- rownames(out.full)
-colnames(result_P_NP_iwp.est) <- colnames(result.cc)
-result_P_NP_iwp.est
+P_NP_iwp.est <- combine_MI(P_NP_IWP_mod)
+P_NP_iwp.est[,"CI_width"] <- P_NP_iwp.est[,"upper.95"] - P_NP_iwp.est[,"lower.95"] 
+P_NP_iwp.est[,"bias"] <- bias_relative(value = result.full[,"exp(coef)"], hat_estimate = P_NP_iwp.est[,"exp(coef)"])
+rownames(P_NP_iwp.est) <- rownames(result.full)
+P_NP_iwp.est
 
 
 
 
 ## Biais relatif en pourcentage
 
-
-
-all_bias <- data.frame(Full = bias_relative(value = result.full[,"exp(coef)"],hat_estimate = result.full[,"exp(coef)"]),
+all_bias <- data.frame(Full =  result.full[,"bias"],
                        CC =  result.cc[,"bias"],
                        Iwp =  result.iwp[,"bias"],
-                       Mice.P =  result_miceP.est[,"bias"],
-                       RF.NP =  result_rfNP.est[,"bias"],
-                       Hybrid1 =  result_P_NP.est[,"bias"],
-                       Hybrid2 =  result_P_iwp.est[,"bias"],
-                       Hybrid3 = result_NP_iwp.est[,"bias"],
-                       Hybrid4 =  result_P_NP_iwp.est[,"bias"])
+                       Mice.P =  miceP.est[,"bias"],
+                       RF.NP =  rfNP.est[,"bias"],
+                       Hybrid1 =  P_NP.est[,"bias"],
+                       Hybrid2 =  P_iwp.est[,"bias"],
+                       Hybrid3 = NP_iwp.est[,"bias"],
+                       Hybrid4 =  P_NP_iwp.est[,"bias"])
 
-
-knitr::kable(round(all_bias[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","tt(age), linear","tt(num.co), linear","crea","hrt","temp","sod","meanbp"),],3))
+rownames(all_bias) <- rownames(result.full)
+knitr::kable(round(all_bias[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
 
 
 ## Largeur des intervalles de confiance
 
 
-all_CI_width <- data.frame(Full = result.full[,"CI_width"],
+all_CI_width <- data.frame(Full =  result.full[,"CI_width"],
                            CC =  result.cc[,"CI_width"],
                            Iwp =  result.iwp[,"CI_width"],
-                           Mice.P =  result_miceP.est[,"CI_width"],
-                           RF.NP =  result_rfNP.est[,"CI_width"],
-                           Hybrid1 =  result_P_NP.est[,"CI_width"],
-                           Hybrid2 =  result_P_iwp.est[,"CI_width"],
-                           Hybrid3 = result_NP_iwp.est[,"CI_width"],
-                           Hybrid4 =  result_P_NP_iwp.est[,"CI_width"])
+                           Mice.P =  miceP.est[,"CI_width"],
+                           RF.NP =  rfNP.est[,"CI_width"],
+                           Hybrid1 =  P_NP.est[,"CI_width"],
+                           Hybrid2 =  P_iwp.est[,"CI_width"],
+                           Hybrid3 = NP_iwp.est[,"CI_width"],
+                           Hybrid4 =  P_NP_iwp.est[,"CI_width"])
 
-
-
-
-knitr::kable(round(all_CI_width[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","tt(age), linear","tt(num.co), linear","crea","hrt","temp","sod","meanbp"),],3))
-
-
-
+rownames(all_CI_width) <- rownames(result.full)
+knitr::kable(round(all_CI_width[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
 
 
 tf <- Sys.time()
