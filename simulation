@@ -1,8 +1,22 @@
+---
+title: "Méthodes hybrides"
+author: "Abdulaye Dioni"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+    highlight: pygments
+    theme: cerulean
+    number_sections: true
+---
+
+
+```{r}
 ########### Méthodes hybrides: Simulation #############
 
 # sink("scenario1.txt")
-
-
+  
+ 
 ti <- Sys.time()
 
 ## Packages 
@@ -13,12 +27,12 @@ library(mice)
 library(mitml)
 library(dplyr)
 library(ranger)
-
+```
 
 # Fonction pour simuler les données de survie
 
 
-
+```{r}
 
 simulate_Cox_weibull <- function(n, nu, eta, beta, lambda) {
   X3 <- rnorm(n, 0, 1)
@@ -34,12 +48,12 @@ simulate_Cox_weibull <- function(n, nu, eta, beta, lambda) {
   return(data.frame(id = seq_len(n), time = time, delta = delta, X1 = X1, X2 = X2, X3 = X3))
 }
 
+```
 
 
+# Paramètres de la fonction de  simulation
 
-## Paramètres de la fonction de  simulation
-
-
+```{r}
 set.seed(123)
 n=1000 # Taille de l'échantillon
 nu = 1.2 # Paramètre de forme de la distribution de weibull
@@ -55,66 +69,67 @@ lambda = 0.3 # scénario 1
 #lambda = 0.5 # scénario 2
 #lambda = 0.7 # scénario 3 # Non présenter dans le papier
 #lambda = 0.9 # scénario 4 # Non présenter dans le papier
+```
 
 
 
+# Nombre de simulation
 
-## Nombre de simulation
+```{r}
+nsim = 1000
 
-
-nsim = 5
-
-
-
-## Données simulées
+```
 
 
+# Données simulées
+
+```{r}
 datas <- lapply(1:nsim, function(s) {
   data <- simulate_Cox_weibull(n=n,nu =nu, eta = eta,beta = beta,lambda = lambda)
   return(data)
 })
 
+```
 
+# Fonction pour générer les valeurs manquantes sous MAR
 
-## Fonction pour générer les valeurs manquantes sous MAR
-
-
+```{r}
 simulate_mar <- function(data,  alpha, mar_var) {
   prob_R <- plogis(model.matrix(~ time + delta +  X2 + X3, data)[, -1] %*% alpha) 
   data$R <- as.factor(rbinom(nrow(data), 1, prob_R)) # Variable indicatrice des données manquantes
   data[[paste0(mar_var, ".mis")]] <- as.factor(ifelse(data$R == 1, data[[mar_var]], NA))
   return(data)
 }
-
+```
 
 
 ## Paramètres  de la fonction de simulation des données manquantes
 
-
+```{r}
 set.seed(450)
 
 alpha = c(-1,2.5,1,1) # Scénario 1
 #alpha = c(-0.5,1.5,0.5,1) # Scénario 2
 #alpha = c(0.5,-0.5,0.5,2) # Scénario 3 # Non présenter dans le papier
 #alpha = c(-1,1,-0.5,1.5) # Scénario 4 # Non présenter dans le papier
+```
 
 
 
+# Mise à jour des données simulées
 
-## Mise à jour des données simulées
-
-
+```{r}
 datas <- lapply(datas, function(data) {
   data <- simulate_mar(data = data,  alpha = alpha, mar_var = "X1")
   return(data)
 })
 
-
+```
 
 # Fonction pour proportions moyennes des observations censurées et manquantes.
 
 
-
+```{r}
 prop <- function(data, nsim, variable) {
   mat <- matrix(NA, ncol = 2, nrow = nsim, dimnames = list(NULL, c("0", "1")))
   for (s in 1:nsim) {
@@ -123,29 +138,30 @@ prop <- function(data, nsim, variable) {
   return(mat)
 }
 
-
+```
 
 
 ## Proportion moyenne des observations censurées
 
 
+```{r}
 prop_delta <- colMeans(prop(datas, nsim,"delta"))*100
 prop_delta
-
+```
 
 
 ## Proportion moyenne des observations manquantes
 
-
+```{r}
 prop_NA <- colMeans(prop(datas, nsim,"R"))*100
 prop_NA
-
+```
 
 
 
 # Fonction pour ajouter le Nelson-Aalen cumulative hazard
 
-
+```{r}
 addcumhaz <- function(data) {
   if (!all(c("time", "delta") %in% colnames(data))) {
     stop("Les colonnes 'time' et 'delta' doivent être présentes dans les données.")
@@ -157,31 +173,31 @@ addcumhaz <- function(data) {
   
   return(data)
 }
-
+```
 
 ## Mise à jour des données simulées
 
-
+```{r}
 datas <- lapply(datas, addcumhaz)
 
-
+```
 
 
 ## Fonctions pour charger des packages dans un calcul en parallèle
 
-
+```{r}
 PACKAGE <- function(package){
   for(p in package){
     library(p, character.only = TRUE)
   }
 }
+```
 
 
 
+# Fonction pour le calcul de la variance et de la couverture des intervalles
 
-## Fonction pour le calcul de la variance et de la couverture des intervalles de confiance
-
-
+```{r}
 fun_var <- function(esti_ech, esti_mean){
   return((esti_ech - esti_mean)^2)
 }
@@ -189,12 +205,13 @@ fun_var <- function(esti_ech, esti_mean){
 fun_coverage <- function(value, CI.low, CI.upper){
   ifelse(CI.low <= value & CI.upper >= value,1,0)
 }
-
+```
 
 
 
 ## Fonction  utile dans le cadre d'une simulation
 
+```{r}
 full_mcar_mar <- function(True, hat_estimate, nsim){
   estime_by_sim <- var_by_sim <-  Cover_by_sim <- CI_width <- data.frame(matrix(NA, nrow = nrow(hat_estimate[[1]]),ncol = nsim))
   for(s in 1:nsim){
@@ -216,13 +233,13 @@ full_mcar_mar <- function(True, hat_estimate, nsim){
   return(out_result = out_result)
 }
 
-
+```
 
 
 ## Full data (Données simulées sans valeurs manquantes)
 
 
-
+```{r}
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("datas"))
 invisible(clusterCall(cl, PACKAGE, c("survival")))
@@ -232,30 +249,31 @@ Full.mod <- parLapply(cl, datas, function(data) {
 })
 
 Full.est <- parLapply(cl, Full.mod, function(model) {
-  coef <- model$coefficients
-  conf_intervals <- confint(model)
+  summ <- summary(model)
+  coef <- summ$coefficients[, "coef"]
+  se <- summ$coefficients[, "se(coef)"]
   est_df <- data.frame(
-    "Estimate" = coef,
-    "CI_low" = conf_intervals[, 1],
-    "CI_up" = conf_intervals[, 2]
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se,
+    CI_up = coef + qnorm(0.975) * se
   )
   return(est_df)
 })
 stopCluster(cl)
 
+```
 
 
-
-
+```{r}
 estisimule <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = Full.est)
 round(estisimule,3)
-
+```
 
 
 
 ## completes cases analysis (MCAR)
 
-
+```{r}
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("datas"))
 invisible(clusterCall(cl, PACKAGE, c("survival")))
@@ -264,33 +282,34 @@ MCAR.mod <- parLapply(cl, datas, function(data) {
 })
 
 MCAR.est <- parLapply(cl, MCAR.mod, function(model) {
-  coef <- model$coefficients
-  conf_intervals <- confint(model)
+  summ <- summary(model)
+  coef <- summ$coefficients[, "coef"]
+  se <- summ$coefficients[, "se(coef)"]
   est_df <- data.frame(
-    "Estimate" = coef,
-    "CI_low" = conf_intervals[, 1],
-    "CI_up" = conf_intervals[, 2]
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se,
+    CI_up = coef + qnorm(0.975) * se
   )
   return(est_df)
 })
 stopCluster(cl) 
+```
 
 
 
-
-
+```{r}
 estimcar <- full_mcar_mar(True = beta,nsim =nsim, hat_estimate = MCAR.est)
 row.names(estimcar) <- rownames(estisimule)
 round(estimcar,3)
-
+```
 
 
 
 
 ## Imputation paramétrique avec le package mice (MAR)
 
-
-M = 4 # Nombre d'imputations
+```{r}
+M = 20 # Nombre d'imputations
 
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("datas", "M")) 
@@ -307,11 +326,11 @@ mice_P_data <- parLapply(cl, 1:nsim, function(s) {
 })
 
 stopCluster(cl)
+```
 
 
 
-
-
+```{r}
 mice_P_data <- lapply(1:nsim, function(s) {
   # Créer une liste de jeux de données combinés pour chaque imputation
   combined_data <- lapply(1:M, function(m) {
@@ -324,6 +343,7 @@ mice_P_data <- lapply(1:nsim, function(s) {
   return(mitml_object)
 })
 
+```
 
 
 
@@ -331,52 +351,115 @@ mice_P_data <- lapply(1:nsim, function(s) {
 
 
 
+```{r}
+combine_MI <- function(manyresult) {
+  # Vérification
+  if (!all(sapply(manyresult, inherits, what = "coxph"))) {
+    stop("Tous les éléments de 'manyresult' doivent être des objets 'coxph'.")
+  }
+  
+  estimates <- list()
+  variances <- list()
+  
+  for (i in seq_along(manyresult)) {
+    mod.sum <- summary(manyresult[[i]])
+    
+    # Détecter si les erreurs sont robustes
+    se_col <- if ("robust se" %in% colnames(mod.sum$coefficients)) {
+      "robust se"
+    } else {
+      "se(coef)"
+    }
+    
+    estimates[[i]] <- mod.sum$coefficients[, "coef"]
+    variances[[i]] <- mod.sum$coefficients[, se_col]^2
+  }
+  
+  estimates_mat <- do.call(rbind, estimates)
+  variances_mat <- do.call(rbind, variances)
+  
+  m <- length(manyresult)
+  
+  Q_bar <- colMeans(estimates_mat)
+  U_bar <- colMeans(variances_mat)
+  B <- apply(estimates_mat, 2, var) * (m / (m - 1))
+  T <- U_bar + (1 + 1 / m) * B
+  se <- sqrt(T)
+  
+  # Degrés de liberté (formule classique de Rubin, 1987)
+  df <- (m - 1) * (T / B)^2
+  
+  # Intervalles de confiance
+  CI_low <- Q_bar - qt(0.975, df) * se
+  CI_up <- Q_bar + qt(0.975, df) * se
+  
+  # p-value (z-test approx)
+  z <- Q_bar / se
+  p_value <- 2 * (1 - pnorm(abs(z)))
+  
+  result <- data.frame(
+    "coef" = Q_bar,
+    "lower.95" = CI_low,
+    "upper.95" = CI_up,
+    check.names = FALSE,
+    row.names = rownames(estimates_mat)
+  )
+  return(result)
+}
 
+```
+
+
+
+```{r}
 compute_mar <- function(data){
   mar.model <- with(data, coxph(Surv(time, delta =="1") ~ X1.mis + X2 +X3 ))
-  mar.est <- data.frame(
-    cbind(summary(mice::pool(mar.model), conf.int = TRUE)[, c("estimate", "2.5 %", "97.5 %")]))
+  mar.est <- combine_MI(mar.model)
   colnames(mar.est) <- c("Estimate",  "CI_low", "CI_up")
   return(mar.est)
 }
+```
 
 
 
-
-
+```{r}
 
 cl <- makeCluster(detectCores())
-clusterExport(cl, c("mice_P_data","compute_mar"))
+clusterExport(cl, c("mice_P_data","compute_mar","combine_MI"))
 invisible(clusterCall(cl, PACKAGE, c("survival","mice","mitml")))
 tout_mice.est <- parLapply(cl,  1:nsim, function(s){
   compute_mar(data = mice_P_data[[s]])
 })
 stopCluster(cl)
 
+```
 
+
+```{r}
 estimar_P_mice <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_mice.est)
 row.names(estimar_P_mice) <- rownames(estisimule)
 round(estimar_P_mice,3)
-
-
+```
 
 
 ## Approche semi-paramétrique: inverse de la probabilité pondérée (MAR)
 
 ### Paramètre de compromis
 
-
-kappa = 1 
+```{r}
+# kappa = 1 
 # kappa = 0.95
 # kappa = 0.9
+kappa = 0.8
 # kappa = 0.7
 # kappa = 0.5
+# kappa = 0.3
 # kappa = 0
+```
 
 
-
-
-
+```{r}
+set.seed(312)
 datas <- lapply(1:nsim, function(s) {
   work.model <- glm(R ~ time + delta + X2 + X3, data = datas[[s]], family = binomial)
   predicted <-  pmax(pmin(predict(work.model, type = "response"), 0.99), 0.01)
@@ -388,45 +471,49 @@ datas <- lapply(1:nsim, function(s) {
   
   return(datas[[s]])
 })
+```
 
 
-
-
+```{r}
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("datas"))
-invisible(clusterCall(cl, PACKAGE, c("survival")))
+invisible(clusterCall(cl, function() library(survival)))
+
 iwp.mod <- parLapply(cl, datas, function(data) {
-  coxph(Surv(time, delta=="1") ~ X1.mis + X2 + X3,weights =w, data = data,robust = TRUE)
+  coxph(Surv(time, delta == "1") ~ X1.mis + X2 + X3, weights = w, data = data, robust = TRUE)
 })
 
 iwp.est <- parLapply(cl, iwp.mod, function(model) {
-  coef <- model$coefficients
-  conf_intervals <- confint(model)
+  summ <- summary(model)
+  coef <- summ$coefficients[, "coef"]
+  se <- summ$coefficients[, "robust se"]
   est_df <- data.frame(
-    "Estimate" = coef,
-    "CI_low" = conf_intervals[, 1],
-    "CI_up" = conf_intervals[, 2]
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se,
+    CI_up = coef + qnorm(0.975) * se
   )
   return(est_df)
 })
+
 stopCluster(cl)
+```
 
 
 
-
-
+```{r}
 estimar_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = iwp.est)
 row.names(estimar_iwp) <- rownames(estisimule)
 round(estimar_iwp,3)
+```
 
 
 
 
-
-## Imputatiion non paramétrique : Random forest (MAR)
-
+## Imputatation non paramétrique : Random forest (MAR)
 
 
+
+```{r}
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("datas", "M")) 
 invisible(clusterCall(cl, PACKAGE, c("mice","ranger")))
@@ -442,78 +529,93 @@ mice.rf.data <- parLapply(cl, 1:nsim, function(s) {
 })
 
 stopCluster(cl)
+```
+
+
+```{r}
+mice.rf.data <- lapply(1:nsim, function(s) {
+  # Créer une liste de jeux de données combinés pour chaque imputation
+  combined_data <- lapply(1:M, function(m) {
+    cbind("time"= datas[[s]]$time, mice::complete(mice.rf.data[[s]], m))
+  })
+  
+  # Convertir la liste de données en un objet mids
+  mitml_object <- mitml::as.mitml.list(combined_data)
+  
+  return(mitml_object)
+})
+```
 
 
 
-
-
-
-
+```{r}
 cl <- makeCluster(detectCores())
-clusterExport(cl, c("mice.rf.data","compute_mar"))
+clusterExport(cl, c("mice.rf.data","compute_mar","combine_MI"))
 invisible(clusterCall(cl, PACKAGE, c("survival","mice","ranger")))
 tout_mice.rf.est <- parLapply(cl,  1:nsim, function(s){
   compute_mar(data = mice.rf.data[[s]])
 })
 stopCluster(cl)
 
+```
 
 
 
 
-
-
+```{r}
 estimar_mice_RF_NP <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_mice.rf.est)
 row.names(estimar_mice_RF_NP) <- rownames(estisimule)
 round(estimar_mice_RF_NP,3)
+```
 
 
 
+# Méthodes hybrides 
 
-## Méthodes hybrides 
-
-### Hybride 1:  MI paramétrique  et  MI non paramétrique (MAR)
+## Hybride 1:  MI paramétrique  et  MI non paramétrique (MAR)
 
 
+```{r}
 P_NP_data <- lapply(1:nsim, function(s) {
   temp_data <- vector("list", M)
   for (i in 1:(M/2)) {
     temp_data[[i]] <- mice_P_data[[s]][[i]]
-    temp_data[[i + (M/2)]] <- mice::complete(mice.rf.data[[s]], i)
+    temp_data[[i + (M/2)]] <- mice.rf.data[[s]][[i]]
   }
   temp_data <- mitml::as.mitml.list(temp_data)
   temp_data
 })
+```
 
 
 
 
-
-
+```{r}
 cl <- makeCluster(detectCores())
-clusterExport(cl, c("P_NP_data","compute_mar"))
+clusterExport(cl, c("P_NP_data","compute_mar","combine_MI"))
 invisible(clusterCall(cl, PACKAGE, c("survival","mice", "mitml","ranger")))
 tout_P_NP.est <- parLapply(cl,  1: nsim, function(s){
   compute_mar(data = P_NP_data[[s]])
 })
 stopCluster(cl)
 
+```
 
 
-
-
+```{r}
 estimar_mice_P_NP <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_P_NP.est)
 row.names(estimar_mice_P_NP ) <- rownames(estisimule)
 round(estimar_mice_P_NP,3)
+```
 
 
 
 
-
-### Hybride 2: MI paramétrique et IWP (MAR)
-
+## Hybride 2: MI paramétrique et IWP (MAR)
 
 
+
+```{r}
 MI.P_IWP_data <- lapply(1:nsim, function(s) {
   imputation <- lapply(1:M, function(m) {
     cbind(mice_P_data[[s]][[m]],
@@ -521,15 +623,13 @@ MI.P_IWP_data <- lapply(1:nsim, function(s) {
     )
   })
 })
-MI.P_IWP_data <- lapply(1:nsim, function(s) {
-  mitml::as.mitml.list(MI.P_IWP_data[[s]])
-})
+
+```
 
 
 
 
-
-
+```{r}
 compute_MI_IWP <- function(data_list) {
   # Initialiser des vecteurs pour stocker les estimations, les variances robustes et les IC
   estimates <- list()
@@ -561,12 +661,12 @@ compute_MI_IWP <- function(data_list) {
   B <- apply(estimates_mat, 2, var)*(m / (m - 1))  # Variance inter-imputation
   T <- U_bar + (1 + 1/m) * B  # Variance totale combinée
   
-  # df: degrés de liberté de Rubin
-  df <- (m - 1)*(1 + U_bar/B)^2
-  
+    # df: degrés de liberté de Rubin
+   df <- (m - 1)*(1 + U_bar/B)^2
+
   # Calcul des erreurs standards et des IC combinés
-  CI_low_combined <- Q_bar - qt(0.975, df = df) * sqrt(T)
-  CI_up_combined <- Q_bar + qt(0.975, df = df) * sqrt(T)
+   CI_low_combined <- Q_bar - qt(0.975, df = df) * sqrt(T)
+   CI_up_combined <- Q_bar + qt(0.975, df = df) * sqrt(T)
   
   # Résultat final sous forme de data.frame
   mar.est <- data.frame(
@@ -576,12 +676,12 @@ compute_MI_IWP <- function(data_list) {
   )
   return(mar.est)
 }
+```
 
 
 
 
-
-
+```{r}
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("MI.P_IWP_data","compute_MI_IWP"))
 invisible(clusterCall(cl, PACKAGE, c("survival","mice","mitml")))
@@ -589,44 +689,40 @@ tout_miceP_iwp.est <- parLapply(cl,  1:nsim, function(s){
   compute_MI_IWP(data = MI.P_IWP_data[[s]])
 })
 stopCluster(cl)
+```
 
 
 
 
 
-
-
+```{r}
 estimar_mice_P_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_miceP_iwp.est)
 row.names(estimar_mice_P_iwp) <- rownames(estisimule)
 round(estimar_mice_P_iwp,3)
+```
 
 
 
-
-### Hybride 3: MI non paramétrique et IWP (MAR)
-
+## Hybride 3: MI non paramétrique et IWP (MAR)
 
 
 
+```{r}
 MI.NP_IWP_data <- lapply(1:nsim, function(s) {
   lapply(1:M, function(m) {
-    cbind(mice::complete(mice.rf.data[[s]], m),
+    cbind(mice.rf.data[[s]][[m]],
           datas[[s]][, c("R", "w")]
     )
   })
 })
 
-
-MI.NP_IWP_data <- lapply(1:nsim, function(s) {
-  mitml::as.mitml.list(MI.NP_IWP_data[[s]])
-})
+```
 
 
 
 
 
-
-
+```{r}
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("MI.NP_IWP_data","compute_MI_IWP"))
 invisible(clusterCall(cl, PACKAGE, c("survival","mice","mitml","ranger")))
@@ -634,21 +730,21 @@ tout_miceNP_iwp.est <- parLapply(cl,  1:nsim, function(s){
   compute_MI_IWP(data = MI.NP_IWP_data[[s]])
 })
 stopCluster(cl)
+```
 
 
-
-
+```{r}
 estimar_mice_NP_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_miceNP_iwp.est)
 row.names(estimar_mice_NP_iwp) <- rownames(estisimule)
 round(estimar_mice_NP_iwp,3)
 
+```
 
 
-
-### Hybride 4: MI paramétrique, MI non paramétrique et IWP (MAR)
-
+## Hybride 4: MI paramétrique, MI non paramétrique et IWP (MAR)
 
 
+```{r}
 P_NP_IWP_data <- lapply(1:nsim, function(s){
   lapply(1:M, function(m){
     cbind(P_NP_data[[s]][[m]],
@@ -656,15 +752,12 @@ P_NP_IWP_data <- lapply(1:nsim, function(s){
   })
 })
 
-P_NP_IWP_data <- lapply(1:nsim, function(s) {
-  mitml::as.mitml.list(P_NP_IWP_data[[s]])
-})
+```
 
 
 
 
-
-
+```{r}
 cl <- makeCluster(detectCores())
 clusterExport(cl, c("P_NP_IWP_data","compute_MI_IWP"))
 invisible(clusterCall(cl, PACKAGE, c("survival","mice","mitml","ranger")))
@@ -672,17 +765,17 @@ tout_mice_P_NP_iwp.est <- parLapply(cl,  1:nsim, function(s){
   compute_MI_IWP(data = P_NP_IWP_data[[s]])
 })
 stopCluster(cl)
+```
 
 
 
 
 
-
-
+```{r}
 estimar_mice_P_NP_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_mice_P_NP_iwp.est)
 row.names(estimar_mice_P_NP_iwp) <- rownames(estisimule)
 round(estimar_mice_P_NP_iwp,3)
-
+```
 
 
 
@@ -691,11 +784,11 @@ round(estimar_mice_P_NP_iwp,3)
 # Résultats
 
 
-
+```{r}
 bias_relative <- function(value,hat_estimate){
   return(((hat_estimate - value)/value)*100)
 }
-
+```
 
 
 
@@ -703,7 +796,7 @@ bias_relative <- function(value,hat_estimate){
 ## Les estimés
 
 
-
+```{r}
 all_estimate <- data.frame(True = beta,
                            Full = estisimule[,"Estimate"],
                            CC = estimcar[,"Estimate"],
@@ -716,7 +809,7 @@ all_estimate <- data.frame(True = beta,
                            Hybrid4 = estimar_mice_P_NP_iwp[,"Estimate"])
 rownames(all_estimate) <- rownames(estisimule)
 knitr::kable(round(all_estimate, 3))
-
+```
 
 
 
@@ -726,7 +819,7 @@ knitr::kable(round(all_estimate, 3))
 ## Biais relatif en pourcentage
 
 
-
+```{r}
 all_bias <- data.frame(Full = bias_relative(value = beta,hat_estimate = estisimule[,"Estimate"]),
                        CC = bias_relative(value = beta,hat_estimate = estimcar[,"Estimate"]),
                        Iwp = bias_relative(value = beta,hat_estimate = estimar_iwp[,"Estimate"]),
@@ -740,7 +833,7 @@ rownames(all_bias) <- rownames(estisimule)
 
 
 knitr::kable(round(all_bias,3))
-
+```
 
 
 
@@ -748,7 +841,7 @@ knitr::kable(round(all_bias,3))
 
 ## standard deviation
 
-
+```{r}
 all_sd <- data.frame(Full = estisimule[,"Emp_sd"],
                      CC = estimcar[,"Emp_sd"],
                      Iwp = estimar_iwp[,"Emp_sd"],
@@ -761,14 +854,14 @@ all_sd <- data.frame(Full = estisimule[,"Emp_sd"],
 rownames(all_sd) <- rownames(estisimule)
 
 knitr::kable(round(all_sd,3))
-
+```
 
 
 
 
 ## Coverage
 
-
+```{r}
 all_coverage <- data.frame(Full = estisimule[,"Cover"],
                            CC = estimcar[,"Cover"],
                            Iwp = estimar_iwp[,"Cover"],
@@ -782,14 +875,14 @@ all_coverage <- data.frame(Full = estisimule[,"Cover"],
 rownames(all_coverage) <- rownames(estisimule)
 
 knitr::kable(all_coverage)
-
+```
 
 
 
 
 ## Largeurs des intervalles de confiance
 
-
+```{r}
 all_CI_width <- data.frame(Full = estisimule[,"CI_width"],
                            CC = estimcar[,"CI_width"],
                            Iwp = estimar_iwp[,"CI_width"],
@@ -803,12 +896,12 @@ all_CI_width <- data.frame(Full = estisimule[,"CI_width"],
 rownames(all_CI_width) <- rownames(estisimule)
 
 knitr::kable(round(all_CI_width,3))
-
+```
 
 ## Réprésentation graphique
 
 
-
+```{r}
 biais_ci_coverage <- function(bias_data, ci_data, coverage_data) {
   # 1. Mise en forme des données
   method_order <- colnames(bias_data) # Capturer l'ordre des colonnes
@@ -854,8 +947,11 @@ biais_ci_coverage <- function(bias_data, ci_data, coverage_data) {
   
   return(plot)
 }
+```
 
 
+
+```{r}
 bias_data <- all_bias
 colnames(bias_data) <- c("FULL", "CC", "IWP", "MICE.P", "RF.NP", "HYBRID1", "HYBRID2","HYBRID3" ,  "HYBRID4")
 rownames(bias_data) <- c("beta12", "beta13", "beta21", "beta3")
@@ -868,16 +964,18 @@ coverage_data <- all_coverage
 colnames(coverage_data) <- colnames(bias_data)
 rownames(coverage_data) <- rownames(bias_data)
 
+```
 
+```{r}
 biais_ci_coverage(bias_data, ci_data, coverage_data)
+```
 
 
-
-
+```{r}
 tf <- Sys.time()
 code_time = tf - ti
 code_time
-
+```
 
 
 # sink()
