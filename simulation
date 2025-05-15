@@ -447,10 +447,10 @@ round(estimar_P_mice,3)
 ### Paramètre de compromis
 
 ```{r}
-# kappa = 1 
+ kappa = 1 
 # kappa = 0.95
 # kappa = 0.9
-kappa = 0.8
+# kappa = 0.8
 # kappa = 0.7
 # kappa = 0.5
 # kappa = 0.3
