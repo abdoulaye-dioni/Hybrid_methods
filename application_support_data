@@ -1,3 +1,17 @@
+---
+title: "application support data"
+author: "Abdulaye Dioni"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+    highlight: pygments
+    theme: cerulean
+    number_sections: true
+---
+
+```{r}
+
 ############ Application: SUPPORT data ####################
 
 # sink("application:support:data.txt")
@@ -22,12 +36,12 @@ library(tableone)
 getHdata(support)
 getHdata(support2)
 
-
+```
 
 
 ## Néttoyage des données
 
-
+```{r}
 support.name <- names(support)
 support.name
 
@@ -44,12 +58,12 @@ support2_data <- as.data.frame(lapply(support2, function(col) {
     return(col)
   }
 }))
+```
 
 
 
 
-
-
+```{r}
 mydata <- support2_data[,c("d.time","death","age","sex", "income","edu", "dzgroup","num.co","meanbp","hrt", "crea", "sod","resp","temp", "wblc", "race")]
 
 
@@ -59,12 +73,12 @@ mydata$hrt <- ifelse(mydata$hrt == 0 | mydata$hrt == 300, NA, mydata$hrt)
 mydata$wblc <- ifelse(mydata$wblc == 0 | mydata$wblc == 200, NA, mydata$wblc)
 #mydata$age <- cut(mydata$age,breaks=c(-Inf,54,64,74,84, +Inf),labels = paste0("",1:5))
 
-
+```
 
 ## Données d'études 
 
 
-
+```{r}
 data_clean <- mydata[complete.cases(mydata[, setdiff(names(mydata), "income")]), ]
 
 
@@ -72,13 +86,13 @@ data_clean$meanbp2 <- data_clean$meanbp^2
 data_clean$hrt2 <- data_clean$hrt^2
 data_clean$temp2 <- data_clean$temp^2
 data_clean$sqrt_crea <- sqrt(data_clean$crea)
-
+```
 
 
 
 ## Recodage de certaines variables
 
-
+```{r}
 data_clean$death <- as.factor(data_clean$death)
 #data_clean$id <- 1:nrow(data_clean)
 levels(data_clean$income) <- c("<$11k", "$11-$25k",  "$25-$50k" ,  ">$50k")
@@ -86,58 +100,49 @@ data_clean$d.time <- data_clean$d.time/(30.4375*3) # Temps en trimestre
 #data_clean$d.time <- data_clean$d.time/365.25 # Temps en année
 data_clean$R.income <- as.factor(ifelse(is.na(data_clean$income),0,1))
 
+```
 
 ## Analyse descriptive des données
 
 ### Proportion des données de SUPPORT utilisées
 
-
+```{r}
 prop_use_support <- (nrow(data_clean)/nrow(support2))*100
 prop_use_support
-
+```
 
 
 ### Proportion des observations censurées et manquantes
 
-
+```{r}
 (sum(data_clean$death ==0)/nrow(data_clean))*100 #  censure
 
-
-
-
-
 (sum(is.na(data_clean$income))/nrow(data_clean))*100 # manquante
-
+```
 
 ###  Description des données par strate de `income` et `R.income`
 
-
+```{r}
 TableOne_death <- tableone::CreateTableOne(vars = setdiff(names(data_clean), c("R.income")),strata = "death",data = data_clean,includeNA = TRUE,test = FALSE)
 
-
-
-
 print(TableOne_death, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE, pDigits = 4)
+```
 
 
 
 
-
-
+```{r}
 TableOne_R.income <- tableone::CreateTableOne(vars = setdiff(names(data_clean), c("id", "income")),strata = "R.income",data = data_clean,includeNA = TRUE, test = FALSE)
 
-
-
-
 print(TableOne_R.income, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE, pDigits = 4)
-
+```
 
 
 
 ## Kaplan-Meier 
 
 
-
+```{r}
 km_income <- survfit (Surv(d.time , death ==1) ~income, data=data_clean, type='kaplan-meier')
 
 km_income_graph <- survminer::ggsurvplot(
@@ -187,7 +192,7 @@ km_R.income_graph$plot <- km_R.income_graph$plot+
 
 
 gridExtra::grid.arrange(grobs = list( km_income_graph$plot, km_R.income_graph$plot), ncol = 2)
-
+```
 
 
 
@@ -196,7 +201,7 @@ gridExtra::grid.arrange(grobs = list( km_income_graph$plot, km_R.income_graph$pl
 
 # Évaluation de la linéarité des variables continues
 
-
+```{r}
 smoothSEcurve <- function(yy, xx) {
   xx.list <- min(xx) + ((0:100)/100)*(max(xx) - min(xx))
   yy.xx <- predict(loess(yy ~ xx), se=T,
@@ -208,77 +213,77 @@ smoothSEcurve <- function(yy, xx) {
           qt(0.975, yy.xx$df)*yy.xx$se.fit ~ xx.list,lwd=2, lty=2, col = "blue")
 }
 
+```
 
 
-
-
+```{r}
 coxph_0 <- coxph(Surv(d.time, death==1) ~ 1, data = data_clean)
 r.martingale <- residuals(coxph_0, type="martingale")
 
 
-
-
-
-
 plot(r.martingale~ data_clean$age,col ="gray",  pch = 19,xlab = "age", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs age")
 smoothSEcurve(r.martingale, data_clean$age)
+```
 
 
 
 
-
-
+```{r}
 plot(r.martingale~ data_clean$edu,col ="gray",  pch = 19,xlab = "edu", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs edu")
 smoothSEcurve(r.martingale, data_clean$edu)
 
+```
 
 
-
+```{r}
 plot(r.martingale~ data_clean$num.co,col ="gray",  pch = 19,xlab = "num.co", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs num.co")
 smoothSEcurve(r.martingale, data_clean$num.co)
 
+```
 
-
-
+```{r}
 plot(r.martingale~ data_clean$meanbp,col ="gray",  pch = 19,xlab = "meanbp", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs meanbp")
 smoothSEcurve(r.martingale, data_clean$meanbp)
+```
 
 
-
+```{r}
 plot(r.martingale~ data_clean$hrt,col ="gray",  pch = 19,xlab = "hrt", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs hrt")
 smoothSEcurve(r.martingale, data_clean$hrt)
+```
 
 
 
 
-
-
+```{r}
 plot(r.martingale~ data_clean$crea,col ="gray",  pch = 19,xlab = "crea", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs crea")
 smoothSEcurve(r.martingale, data_clean$crea)
+```
 
 
 
-
-
+```{r}
 plot(r.martingale~ data_clean$resp,col ="gray",  pch = 19,xlab = "resp", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs resp")
 smoothSEcurve(r.martingale, data_clean$resp)
+```
 
-
+```{r}
 
 plot(r.martingale~ data_clean$temp,col ="gray",  pch = 19,xlab = "temp", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs temp")
 smoothSEcurve(r.martingale, data_clean$temp)
 
+```
 
-
-
+```{r}
 plot(r.martingale~ data_clean$sod,col ="gray",  pch = 19,xlab = "sod", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs sod")
 smoothSEcurve(r.martingale, data_clean$sod)
+```
 
 
-
+```{r}
 plot(r.martingale~ data_clean$wblc,col ="gray",  pch = 19,xlab = "wblc", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs wblc")
 smoothSEcurve(r.martingale, data_clean$wblc)
-
+```
 
 
 
@@ -289,17 +294,17 @@ smoothSEcurve(r.martingale, data_clean$wblc)
 
 
 
-
+```{r}
 log_log_sex <- survfit(Surv(d.time, death==1) ~ sex, data = data_clean)
 plot(log_log_sex, fun = "cloglog", col = 1:2, xlab = "years", ylab = "log-log(Survival)")
 title("log-log plot for sex (KM curve)")
 legend("topleft", legend = levels(data_clean$sex), col = 1:2, lty = 1)
 
+```
 
 
 
-
-
+```{r}
 log_log_dzgroup <- survfit(Surv(d.time, death == 1) ~ dzgroup, data = data_clean)
 
 plot(log_log_dzgroup, fun = "cloglog", 
@@ -310,11 +315,11 @@ title("Log-log plot for dzgroup (KM curve)")
 
 legend("bottomright", legend = levels(data_clean$dzgroup), 
        col = 1:length(unique(data_clean$dzgroup)), lty = 1)
+```
 
 
 
-
-
+```{r}
 log_log_income <- survfit(Surv(d.time, death == 1) ~ income, data = data_clean)
 
 plot(log_log_income, fun = "cloglog", 
@@ -326,11 +331,11 @@ title("Log-log plot for income (KM curve)")
 legend("bottomright", legend = levels(data_clean$income), 
        col = 1:length(unique(data_clean$income)), lty = 1)
 
+```
 
 
 
-
-
+```{r}
 log_log_race <- survfit(Surv(d.time, death == 1) ~ race, data = data_clean)
 
 plot(log_log_race, fun = "cloglog", 
@@ -342,38 +347,38 @@ title("Log-log plot for race (KM curve)")
 legend("bottomright", legend = levels(data_clean$race), 
        col = 1:length(unique(data_clean$race)), lty = 1)
 
+```
 
 
 
 
-
-
+```{r}
 
 PH_data_clean <- coxph(Surv(d.time, death==1) ~ age + sex +  dzgroup + num.co + income +
                          edu+ meanbp + hrt + crea +  sod  + temp +   wblc+ resp + race , data = data_clean)
+```
 
 
-
-
+```{r}
 reszphkm <- cox.zph(PH_data_clean)
 reszphkm
 
+```
 
 
 
-
-
+```{r}
 op <- par(mfrow = c(2,3))
 plot(reszphkm[1:6,1:6],col = "blue")
 par(op)
 
+```
 
+```{r}
 op <- par(mfrow = c(2,3))
 plot(reszphkm[7:12,7:12],col = "blue")
 par(op)
-
-
-
+```
 
 
 # Méthodes classiques
@@ -382,45 +387,64 @@ par(op)
 
 
 
-
+```{r,warning=FALSE}
 
 mod.mcar <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +  
-temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), data = na.omit(data_clean), 
-                  tt = function(x, t, ...) pspline(x + t, df = 3))
+    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+    num.co + age +
+    num.co:d.time + age:d.time + 
+    strata(dzgroup), data = na.omit(data_clean))
+```
 
 
 
-
-extract_linear_terms <- function(cox_model) {
-  model_summary <- summary(cox_model)
-  results_table <- as.data.frame(model_summary$coefficients)
-  results_table$term <- rownames(results_table)
-  linear_terms <- results_table[grep("linear|^(?!.*nonlin)", results_table$term, perl = TRUE), ]
-  #row.names(linear_terms) <- NULL
-  return(linear_terms)
+```{r}
+extract_full_mcar_iwp <- function(cox_model) {
+  # Vérification
+  if (!inherits(cox_model, "coxph")) {
+    stop("L'objet fourni n'est pas un modèle de type 'coxph'.")
+  }
+  
+  # Extraire le résumé du modèle
+  mod.sum <- summary(cox_model)
+  
+  # Vérifie si des erreurs robustes sont présentes
+  colnames_coef <- colnames(mod.sum$coefficients)
+  se_col <- if ("robust se" %in% colnames_coef) "robust se" else "se(coef)"
+  
+  # Extraire coefficients et SE appropriés
+  coef_est <- mod.sum$coefficients[, "coef"]
+  se_est   <- mod.sum$coefficients[, se_col]
+  
+  # Calculs
+  lower_ci <- coef_est - qnorm(0.975) * se_est
+  upper_ci <- coef_est + qnorm(0.975) * se_est
+  p_value  <- 2 * (1 - pnorm(abs(coef_est / se_est)))
+  ci_width <- 2 * qnorm(0.975) * se_est
+  
+  # Construction du tableau
+  result <- data.frame(
+    "exp(coef)" = exp(coef_est),
+    "lower.95"  = exp(lower_ci),
+    "upper.95"  = exp(upper_ci),
+    "Pr(>|z|)"  = p_value,
+    "CI_width"  = ci_width,
+    check.names = FALSE
+  )
+  
+  return(result)
 }
+```
 
 
 
 
+```{r}
+result.cc <- extract_full_mcar_iwp(mod.mcar)
+knitr::kable(round(result.cc[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
 
 
-out.mcar <- extract_linear_terms(mod.mcar)
-
-
-
-
-# Utilisation des erreurs standard pénalisées
-
-result.cc <- cbind(
-  "exp(coef)" = exp(out.mcar[,c("coef")]),
-  "lower.95" = exp(out.mcar[,c("coef")] -qnorm(0.975) *out.mcar[,c("se2")]),
-  "upper.95" = exp(out.mcar[,c("coef")] +qnorm(0.975)*out.mcar[,c("se2")]),
-  "Pr(>|z|)" =  2 * (1 - pnorm(abs(out.mcar[,c("coef")]/out.mcar[,c("se2")])))
-)
-
-rownames(result.cc) <- rownames(out.mcar)
-result.cc
 
 
 
@@ -428,42 +452,56 @@ result.cc
 
 ## Approche sémi-paramétrique: inverse de la probabilité pondérée (MAR)
 
+#Parmètre de compromis
+
+```{r}
+# kappa = 1 
+#kappa = 0.95
+kappa = 0.9
+```
 
 
-theta = 0.9 #Parmètre de compromis
-
+```{r}
+set.seed(312)
 work.model <- glm(R.income ~ d.time + death + age + sex +  sod +  temp +
                     dzgroup + num.co + hrt +crea + meanbp, data = data_clean, family = binomial)
 predicted <-  pmax(pmin(predict(work.model, type = "response"), 0.99), 0.01)
+```
+
 
 # Poids pondéré pour les observations manquantes selon notre proposition
 
+```{r}
 data_clean$w_corrected <- ifelse(
   data_clean$R.income == 1,
   1 / predicted, 
-  theta*1 + (1-theta)*(1 / (1-predicted)))
+  kappa*1 + (1-kappa)*(1 / (1-predicted)))
+```
+
 
 # Poids classique pour les observations manquantes selon  iwp standard
 
+```{r}
 data_clean$w_standard <- ifelse(
   data_clean$R.income == 1,
   1 / predicted, 
   1 / (1-predicted))
+```
 
 
 
-
-
-
-
+```{r}
 summary(data_clean[data_clean$R.income == 0, c("w_corrected", "w_standard")])
 
 summary(data_clean[data_clean$R.income == 1, c("w_corrected", "w_standard")])
+```
+
 
 
 # Disttribution du poids pondéré vs poids standard
 
 
+```{r}
 p1 <- ggplot(data_clean, aes(x = w_corrected, fill = factor(R.income))) +
   geom_histogram(alpha = 0.5, bins = 30) +
   scale_fill_manual(values = c("green", "blue"), labels = c("R.income = 0", "R.income = 1")) +
@@ -490,37 +528,29 @@ p2 <- ggplot(data_clean, aes(x = w_standard, fill = factor(R.income))) +
 gridExtra::grid.arrange(grobs = list( p1,  p2), nrow = 2)
 
 
+```
 
 
 
 
 
+
+```{r,warning=FALSE}
 mod.iwp <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +  
-temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), data = na.omit(data_clean), 
-                 tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected,robust = TRUE)
+    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
+    num.co + age +
+    num.co:d.time + age:d.time + 
+    strata(dzgroup), data = na.omit(data_clean), 
+                weights = w_corrected,robust = TRUE)
+```
 
 
 
+```{r}
+result.iwp <- extract_full_mcar_iwp(mod.iwp)
+knitr::kable(round(result.iwp[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
 
-
-
-
-out.iwp <- extract_linear_terms(mod.iwp)
-
-
-
-
-# Utilisation des erreurs standards robustes
-
-result.iwp <- cbind(
-  "exp(coef)" = exp(out.iwp[,c("coef")]),
-  "lower.95" = exp(out.iwp[,c("coef")] - qnorm(0.975)*out.iwp[,c("se(coef)")]),
-  "upper.95" = exp(out.iwp[,c("coef")] + qnorm(0.975)*out.iwp[,c("se(coef)")]),
-  "Pr(>|z|)" = 2 * (1 - pnorm(abs(out.iwp[,c("coef")]/out.iwp[,c("se(coef)")])))
-)
-rownames(result.iwp) <- rownames(result.cc)
-colnames(result.iwp) <- colnames(result.cc)
-result.iwp
 
 
 
@@ -533,16 +563,23 @@ result.iwp
 
 
 
+```{r}
 data_clean$cumhaz <- NA
 fit <-  survfit(survival::Surv(d.time, death == 1) ~ 1, data = data_clean, type = "fh")
 time_indices <- match(data_clean$d.time, fit$time)
 data_clean$cumhaz[!is.na(time_indices)] <- fit$cumhaz[time_indices[!is.na(time_indices)]]
 
+```
 
 
+# Nombre d'imputation
 
-M = 10 # Nombre d'imputation
+```{r}
+M = 50
+```
+ 
 
+```{r}
 mice_P_data <- mice(
   data= data_clean[,c("cumhaz", "death", "age","sex","income","sod","dzgroup","num.co","hrt","wblc","temp","crea","meanbp")],  
   m = M,         
@@ -551,83 +588,106 @@ mice_P_data <- mice(
   print = FALSE,
   seed = 10000
 )
+```
 
 
 
 
 
+
+```{r}
 mice_P_data <-  lapply(1:M, function(m) {
   cbind(data_clean[,c("d.time","sqrt_crea","temp2","meanbp2","hrt2")], mice::complete(mice_P_data, m))
 })
 mice_P_data <- mitml::as.mitml.list(mice_P_data)
+```
 
 
 
 
+
+```{r,warning=FALSE}
 miceP.model <- with(mice_P_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-             temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup), 
-                                       tt = function(x, t, ...) pspline(x + t, df = 3)))
+                                            temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time + 
+                                            strata(dzgroup)))
+
+```
 
 
+## Fonction qui combine les résulats selon la règle de Rubin
 
 
-
-
-
-list_P_mod <- lapply(miceP.model,function(terme)
-{ extract_linear_terms(terme)})
-
-
-## Fonction qui combine les résulats selon la règle de Rubin (usage de Variances pénalisées)
-
+```{r}
 combine_MI <- function(manyresult) {
+  # Vérification
+  if (!all(sapply(manyresult, inherits, what = "coxph"))) {
+    stop("Tous les éléments de 'manyresult' doivent être des objets 'coxph'.")
+  }
+  
   estimates <- list()
-  penalize_variances <- list()
+  variances <- list()
   
   for (i in seq_along(manyresult)) {
-    estimates[[i]] <- manyresult[[i]][,c("coef")] 
-    penalize_variances[[i]] <- (manyresult[[i]][,c("se2")])^2  
+    mod.sum <- summary(manyresult[[i]])
+    
+    # Détecter si les erreurs sont robustes
+    se_col <- if ("robust se" %in% colnames(mod.sum$coefficients)) {
+      "robust se"
+    } else {
+      "se(coef)"
+    }
+    
+    estimates[[i]] <- mod.sum$coefficients[, "coef"]
+    variances[[i]] <- mod.sum$coefficients[, se_col]^2
   }
   
   estimates_mat <- do.call(rbind, estimates)
-  penalize_variances_mat <- do.call(rbind, penalize_variances)
+  variances_mat <- do.call(rbind, variances)
+  
   m <- length(manyresult)
   
-  # Combiner les estimations et les variances avec la règle de Rubin
-  Q_bar <- colMeans(estimates_mat)  # Moyenne des estimations
-  U_bar <- colMeans(penalize_variances_mat)  # Variance intra-imputation (robuste)
-  B <- apply(estimates_mat, 2, var) * (m / (m - 1))  # Variance inter-imputation
-  T <- U_bar + (1 + 1/m) * B  # Variance totale combinée
-  penalise_se <- sqrt(T)  # Erreur standard combinée
+  Q_bar <- colMeans(estimates_mat)
+  U_bar <- colMeans(variances_mat)
+  B <- apply(estimates_mat, 2, var) * (m / (m - 1))
+  T <- U_bar + (1 + 1 / m) * B
+  se <- sqrt(T)
   
-  # Calcul des intervalles de confiance
-  CI_low_combined <- Q_bar - qnorm(0.975) * penalise_se
-  CI_up_combined <- Q_bar + qnorm(0.975) * penalise_se
+  # Degrés de liberté (formule classique de Rubin, 1987)
+  df <- (m - 1) * (T / B)^2
   
-  # Calcul des statistiques de test
-  z <- Q_bar / penalise_se
-  P.value <- 2 * (1 - pnorm(abs(z)))  # p-value bilatérale
+  # Intervalles de confiance
+  CI_low <- Q_bar - qt(0.975, df) * se
+  CI_up <- Q_bar + qt(0.975, df) * se
   
-  # Résultat final sous forme de data.frame
-  mar.est <- data.frame(
-    Estimate = Q_bar,
-    penalise_se = penalise_se,
-    CI_low = CI_low_combined,
-    CI_up = CI_up_combined,
-    P.value = P.value
+  # p-value (z-test approx)
+  z <- Q_bar / se
+  p_value <- 2 * (1 - pnorm(abs(z)))
+  
+  result <- data.frame(
+    "exp(coef)" = exp(Q_bar),
+    "lower.95" = exp(CI_low),
+    "upper.95" = exp(CI_up),
+    "Pr(>|z|)" = p_value,
+    check.names = FALSE,
+    row.names = rownames(estimates_mat)
   )
-  
-  return(mar.est)
+  return(result)
 }
+```
 
 
 
 
-miceP.est <- combine_MI(list_P_mod)
-result_miceP.est <- cbind(exp(miceP.est [,c("Estimate","CI_low","CI_up")]), "P.value" = miceP.est[,"P.value"])
+```{r}
+result_miceP.est <- combine_MI(miceP.model)
+result_miceP.est[,"CI_width"] <- result_miceP.est[,"upper.95"] - result_miceP.est[,"lower.95"]
 rownames(result_miceP.est) <- rownames(result.cc)
-colnames(result_miceP.est) <-colnames(result.cc)
-result_miceP.est
+knitr::kable(round(result_miceP.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
+
+
+
+
 
 
 
@@ -640,45 +700,48 @@ result_miceP.est
 
 
 
-cart_NP_data <- mice(
+```{r}
+rf_NP_data <- mice(
   data= data_clean[,c("d.time", "death", "age","sex","income","sod","dzgroup","num.co","hrt","wblc","temp","crea","meanbp")],  
   m = M,         
   maxit = 5,      
-  method = c("cart", "cart", "cart", "cart", "cart", "cart","cart","cart","cart","cart","cart","cart","cart"),
+  method = c("rf", "rf", "rf", "rf", "rf", "rf","rf","rf","rf","rf","rf","rf","rf"),
   print = FALSE,
   seed = 10000
 )
+```
 
 
 
-
-
-cart_NP_data <-  lapply(1:M, function(m) {
-  cbind(data_clean[,c("d.time","sqrt_crea","temp2","meanbp2","hrt2")], mice::complete(cart_NP_data, m))
+```{r}
+rf_NP_data <-  lapply(1:M, function(m) {
+  cbind(data_clean[,c("d.time","sqrt_crea","temp2","meanbp2","hrt2")], mice::complete(rf_NP_data, m))
 })
-cart_NP_data <- mitml::as.mitml.list(cart_NP_data)
+rf_NP_data <- mitml::as.mitml.list(rf_NP_data)
+```
 
 
 
 
-cartNP.model <-  with(cart_NP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                          tt = function(x, t, ...) pspline(x + t, df = 3)))
+
+```{r,warning=FALSE}
+rfNP.model <-  with(rf_NP_data, coxph(Surv(d.time, death ==1) ~  income + sex + sod +  
+                                        temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age +  num.co:d.time + age:d.time + strata(dzgroup)))
+
+```
 
 
 
 
-list.NP_mod <- lapply(cartNP.model,function(terme)
-{ extract_linear_terms(terme)})
+
+```{r}
+result_rfNP.est <- combine_MI(rfNP.model)
+result_rfNP.est[,"CI_width"] <- result_rfNP.est[,"upper.95"] - result_rfNP.est[,"lower.95"]
+rownames(result_rfNP.est) <- rownames(result.cc)
+knitr::kable(round(result_rfNP.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
 
 
-
-
-cartNP.est <- combine_MI(list.NP_mod)
-result_cartNP.est <- cbind(exp(cartNP.est [,c("Estimate","CI_low","CI_up")]), cartNP.est[,"P.value"])
-rownames(result_cartNP.est) <- rownames(result.cc)
-colnames(result_cartNP.est) <-colnames(result.cc)
-result_cartNP.est
 
 
 
@@ -689,38 +752,33 @@ result_cartNP.est
 ## Hybride 1: MI paramétrique et MI non paramétrique (MAR)
 
 
+```{r}
 P_NP_data <- vector("list", M)
 for (i in 1:(M/2)) {
   P_NP_data[[i]] <- mice_P_data[[i]]
-  P_NP_data[[i + (M/2)]] <- cart_NP_data[[i]]
+  P_NP_data[[i + (M/2)]] <- rf_NP_data[[i]]
 }
 P_NP_data <- mitml::as.mitml.list(P_NP_data)
+```
 
 
 
 
 
-
+```{r,warning=FALSE}
 P_NP_mod <- with(P_NP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                  tt = function(x, t, ...) pspline(x + t, df = 3)))
+                                    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time + strata(dzgroup)))
+```
 
 
 
 
-
-list.P_NP <- lapply(P_NP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-P_NP.est<- combine_MI(list.P_NP)
-result_P_NP.est <- cbind(exp(P_NP.est [,c("Estimate","CI_low","CI_up")]), "P.value" = P_NP.est[,"P.value"])
+```{r}
+result_P_NP.est <- combine_MI(P_NP_mod)
+result_P_NP.est[,"CI_width"] <- result_P_NP.est[,"upper.95"] - result_P_NP.est[,"lower.95"]
 rownames(result_P_NP.est) <- rownames(result.cc)
-colnames(result_P_NP.est) <-colnames(result.cc)
-result_P_NP.est
-
+knitr::kable(round(result_P_NP.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
 
 
 
@@ -730,85 +788,35 @@ result_P_NP.est
 ## Hybride 2: MI paramétrique et IWP (MAR)
 
 
+```{r}
 
 MI.P_IWP_data <-  lapply(1:M, function(m) {
   cbind(mice_P_data[[m]], data_clean[, c("sqrt_crea","temp2","meanbp2","hrt2", "R.income", "w_corrected", "w_standard")])
 })
 
 MI.P_IWP_data <- mitml::as.mitml.list(MI.P_IWP_data)
+```
 
 
 
 
+
+```{r,warning=FALSE}
 MI.P_IWP_mod <- with(MI.P_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                          tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected, robust = TRUE))
+                                            temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +  num.co + age + num.co:d.time + age:d.time + strata(dzgroup)
+                                          ,weights = w_corrected, robust = TRUE))
+```
 
-
-
-
-
-list.P_IWP <- lapply(MI.P_IWP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-
-
-# Fonction qui combine les résulats selon la règle de Rubin (usage de Variances robutes)
-
-combine_MI_IWP <- function(manyresult) {
-  estimates <- list()
-  robust_variances <- list()
-  
-  for (i in seq_along(manyresult)) {
-    estimates[[i]] <- manyresult[[i]][,c("coef")] 
-    robust_variances[[i]] <- (manyresult[[i]][,c("se(coef)")])^2  
-  }
-  
-  estimates_mat <- do.call(rbind, estimates)
-  robust_variances_mat <- do.call(rbind, robust_variances)
-  m <- length(manyresult)
-  
-  # Combiner les estimations et les variances avec la règle de Rubin
-  Q_bar <- colMeans(estimates_mat)  # Moyenne des estimations
-  U_bar <- colMeans(robust_variances_mat)  # Variance intra-imputation (robuste)
-  B <- apply(estimates_mat, 2, var) * (m / (m - 1))  # Variance inter-imputation
-  T <- U_bar + (1 + 1/m) * B  # Variance totale combinée
-  Robust_se <- sqrt(T)  # Erreur standard combinée
-  
-  # Calcul des intervalles de confiance
-  CI_low_combined <- Q_bar - qnorm(0.975) * Robust_se
-  CI_up_combined <- Q_bar + qnorm(0.975) * Robust_se
-  
-  # Calcul des statistiques de test
-  z <- Q_bar / Robust_se
-  P.value <- 2 * (1 - pnorm(abs(z)))  # p-value bilatérale
-  
-  # Résultat final sous forme de data.frame
-  mar.est <- data.frame(
-    Estimate = Q_bar,
-    Robust_se = Robust_se,
-    CI_low = CI_low_combined,
-    CI_up = CI_up_combined,
-    P.value = P.value
-  )
-  
-  return(mar.est)
-}
-
-
-
-
-
-
-P_iwp.est <- combine_MI_IWP(manyresult = list.P_IWP)
-
-result_P_iwp.est <- cbind(exp(P_iwp.est[,c("Estimate","CI_low","CI_up")]),P_iwp.est[,c("P.value")])
+```{r}
+result_P_iwp.est <- combine_MI(MI.P_IWP_mod)
+result_P_iwp.est[,"CI_width"] <- result_P_iwp.est[,"upper.95"] - result_P_iwp.est[,"lower.95"]
 rownames(result_P_iwp.est) <- rownames(result.cc)
-colnames(result_P_iwp.est) <- colnames(result.cc)
-result_P_iwp.est
+knitr::kable(round(result_P_iwp.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
+
+
+
+
 
 
 
@@ -816,36 +824,36 @@ result_P_iwp.est
 
 
 
+```{r}
 MI.NP_IWP_data <-  lapply(1:M, function(m) {
-  cbind(cart_NP_data[[m]], data_clean[, c("sqrt_crea","temp2","meanbp2","hrt2","R.income", "w_corrected", "w_standard")])
+  cbind(rf_NP_data[[m]], data_clean[, c("sqrt_crea","temp2","meanbp2","hrt2","R.income", "w_corrected", "w_standard")])
 })
 
 MI.NP_IWP_data <- mitml::as.mitml.list(MI.NP_IWP_data)
+```
 
 
 
 
+
+```{r,warning=FALSE}
 MI.NP_IWP_mod <-  with(MI.NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                             tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected, robust = TRUE))
+                                    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time + strata(dzgroup),
+                                             weights = w_corrected, robust = TRUE))
+```
 
 
 
-
-
-list.NP_IWP <- lapply(MI.NP_IWP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-
-NP_iwp.est <- combine_MI_IWP(manyresult = list.NP_IWP)
-
-result_NP_iwp.est <- cbind(exp(NP_iwp.est[,c("Estimate","CI_low","CI_up")]),NP_iwp.est[,c("P.value")])
+```{r}
+result_NP_iwp.est <- combine_MI(MI.NP_IWP_mod)
+result_NP_iwp.est[,"CI_width"] <- result_NP_iwp.est[,"upper.95"] - result_NP_iwp.est[,"lower.95"]
 rownames(result_NP_iwp.est) <- rownames(result.cc)
-colnames(result_NP_iwp.est) <- colnames(result.cc)
-result_NP_iwp.est
+knitr::kable(round(result_NP_iwp.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
+
+
+
+
 
 
 
@@ -855,36 +863,41 @@ result_NP_iwp.est
 
 
 
+```{r}
 P_NP_IWP_data <- lapply(1:M, function(m){
   cbind(P_NP_data[[m]],data_clean[, c("sqrt_crea","temp2","meanbp2","hrt2","R.income", "w_corrected", "w_standard")])
 })
 P_NP_IWP_data <- mitml::as.mitml.list(P_NP_IWP_data)
+```
 
 
 
+
+```{r,warning=FALSE}
 P_NP_IWP_mod <- with(P_NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-temp +temp2 + meanbp + meanbp2 + hrt +  hrt2 + crea + sqrt_crea + tt(num.co)  + tt(age) + strata(dzgroup),
-                                          tt = function(x, t, ...) pspline(x + t, df = 3),weights = w_corrected, robust = TRUE))
+                                    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time +  strata(dzgroup),
+                                      weights = w_corrected, robust = TRUE))
+```
 
 
 
-
-list.P_NP_IWP <- lapply(P_NP_IWP_mod,function(terme)
-{ extract_linear_terms(terme)})
-
-
-
-
-P_NP_iwp.est <- combine_MI_IWP(manyresult = list.P_NP_IWP)
-
-result_P_NP_iwp.est <- cbind(exp(P_NP_iwp.est[,c("Estimate","CI_low","CI_up")]),P_NP_iwp.est[,c("P.value")])
+```{r}
+result_P_NP_iwp.est <- combine_MI(P_NP_IWP_mod)
+result_P_NP_iwp.est[,"CI_width"] <- result_P_NP_iwp.est[,"upper.95"] - result_P_NP_iwp.est[,"lower.95"]
 rownames(result_P_NP_iwp.est) <- rownames(result.cc)
-colnames(result_P_NP_iwp.est) <- colnames(result.cc)
-result_P_NP_iwp.est
+knitr::kable(round(result_P_NP_iwp.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+```
 
 
+
+
+
+```{r}
 tf <- Sys.time()
 code_time <- tf - ti
 code_time
 
 # sink()
+```
+
+
