@@ -1,0 +1,1136 @@
+---
+title: "Méthodes hybrides sous relation linéaire et non linéaire"
+output: 
+  html_document: 
+    highlight: tango
+    theme: cerulean
+date: "`r Sys.Date()`"
+---
+
+
+
+
+## Simulation: Bias of Hybrid Methods under Linear and Nonlinear Relationships
+
+The simulation design presented in this section is **inspired by Van Buuren (2018)**, particularly his book *Flexible Imputation of Missing Data*.  
+The goal is to generate a collection of simulated datasets where the outcome variable follows both a **nonlinear relationship** with covariate \(X_1\) (threshold effect) and a **linear relationship** with another covariate \(X_2\).  
+This framework allows us to assess the bias of hybrid imputation methods in more complex settings than simple linear models.
+
+### Generation of Complete Data
+
+We consider two covariates, \(X_1\) and \(X_2\), both drawn from a standard normal distribution.  
+The outcome variable \(Y\) is generated as follows:
+
+\[
+Y_i =
+\begin{cases}
+\beta_0 + \beta_3 X_{2i} + \varepsilon_i, & \text{if } X_{1i} < c \\
+\beta_0 + \beta_1 + \beta_3 X_{2i} + \varepsilon_i, & \text{if } X_{1i} \geq c
+\end{cases}
+\quad \text{with } \varepsilon_i \sim \mathcal{N}(0, \sigma^2)
+\]
+
+This model includes:
+- a **threshold effect** on \(X_1\), determined by the cutoff \(c\),
+- a **linear effect** on \(X_2\),
+- **heterogeneity** induced by a jump \(\beta_1\) in the intercept when \(X_1 \geq c\).
+
+The parameters are set to \(\beta_0 = 2\), \(\beta_1 = 1\), \(\beta_3 = 0.5\), and \(\sigma^2 = 1\).  
+A function `create.data()` is used to generate the complete data, and the procedure is repeated \(n_{\text{sim}}\) times to produce independent datasets of size \(n\), stored in the list `data_sim`.
+
+
+
+
+```{r}
+library(parallel)
+library(mice)
+library(mitml)
+library(ranger)
+```
+
+```{r}
+ti <- Sys.time()
+```
+
+
+## Step 1: Simulation Function
+
+```{r}
+t1 <- Sys.time()
+```
+
+```{r}
+create.data <- function(beta, sigma2 = 1, n = 200, c = 0) {
+  X1 <- rnorm(n)
+  X2 <- rnorm(n)
+  
+  Y <- ifelse(X1 < c,
+              beta[1],                               # Si X1 < c : intercept seul
+              beta[1] + beta[2]         # Si X1 ≥ c : saut + X2
+             ) + beta[3] * X2 + rnorm(n, sd = sqrt(sigma2))
+  
+  data.frame(X1 = X1, X2 = X2, Y = Y)
+}
+```
+
+# Step 2: Generate the data
+
+
+```{r}
+# Paramètres de simulation
+set.seed(123)
+n <- 500
+nsim <- 1000
+beta <- c(2, 1, 0.5)
+sigma2 <- 1
+c <- 0
+
+# Génération des données complètes
+
+```
+
+
+```{r}
+set.seed(123)
+data_sim <- lapply(1:nsim, function(i) {
+  create.data(beta = beta, sigma2 = sigma2, n = n, c = c)
+})
+```
+
+
+
+
+# Introduce a MAR mechanism on using `ampute`
+
+
+
+
+
+```{r}
+set.seed(123)
+
+amp_data <- lapply(1:nsim, function(s) {
+  ampute(
+    data_sim[[s]],
+    patterns = matrix(
+      c(0, 0, 1,  # X1 et X2 manquants, Y observé
+        0, 1, 1), # X1 manquant, X2 et Y observés
+      byrow = TRUE, ncol = 3
+    ),
+    freq = c(0.5, 0.5),
+    prop = 0.3,
+    mech = "MAR",
+    weights =  matrix(
+      c(0, 0, 1,  # X1 et X2 manquants, Y observé
+        0, 1, 1), # X1 manquant, X2 et Y observés
+      byrow = TRUE, ncol = 3
+    )  # un MAR simple, dépendance équilibrée de X1 et X2
+  )$amp
+})
+
+
+```
+
+
+
+
+
+```{r}
+
+data_mar <- lapply(1:nsim, function(s) {
+  df <- amp_data[[s]]
+  df$R <- as.integer(!is.na(df$X1))
+  df  # retourner le jeu de données modifié
+})
+```
+
+
+
+```{r}
+summary(data_mar[[1]])
+```
+
+```{r}
+md.pattern(data_mar[[1]])
+```
+
+
+ 
+## Functions to load packages for parallel computing
+
+```{r}
+PACKAGE <- function(package){
+  for(p in package){
+    library(p, character.only = TRUE)
+  }
+}
+```
+
+
+
+# Function to compute variance and confidence interval coverage
+
+```{r}
+fun_var <- function(esti_ech, esti_mean){
+  return((esti_ech - esti_mean)^2)
+}
+
+fun_coverage <- function(value, CI.low, CI.upper){
+  ifelse(CI.low <= value & CI.upper >= value,1,0)
+}
+```
+
+```{r}
+bias_relative <- function(value,hat_estimate){
+  return(((hat_estimate - value)/value)*100)
+}
+```
+
+
+```{r}
+mse <- function(value, estimate, sd) {
+
+  (estimate - value)^2 + sd^2
+}
+```
+
+
+## Useful Function for Simulation Framework
+
+```{r}
+full_mcar_mar <- function(True, hat_estimate, nsim){
+  estime_by_sim <- var_by_sim <-  Cover_by_sim <- CI_width <- data.frame(matrix(NA, nrow = nrow(hat_estimate[[1]]),ncol = nsim))
+  for(s in 1:nsim){
+    estime_by_sim[,s] <- hat_estimate[[s]]["Estimate"]
+    var_by_sim[,s] <- fun_var(esti_ech = hat_estimate[[s]][,"Estimate"], esti_mean = rowMeans(sapply(hat_estimate, function(x) x[,"Estimate"])) )
+    Cover_by_sim[,s] <- fun_coverage(value = True, CI.low = hat_estimate[[s]]["CI_low"], CI.upper = hat_estimate[[s]]["CI_up"])
+  }
+  
+  out_result <- data.frame("True" = True,
+                           "Estimate" = rowMeans(estime_by_sim),
+                           "Emp_sd" = sqrt(rowSums(var_by_sim)/(nsim -1)),
+                           "CI_low" = rowMeans(estime_by_sim) - qnorm(0.975)*sqrt(rowSums(var_by_sim)/(nsim -1)),
+                           "CI_up" = rowMeans(estime_by_sim) + qnorm(0.975)*sqrt(rowSums(var_by_sim)/(nsim -1)),
+                           "CI_width" =  2 * qnorm(0.975) * sqrt(rowSums(var_by_sim) / (nsim - 1)),
+                           "Cover" = rowMeans(Cover_by_sim),
+                           "Cover_low" = rowMeans(Cover_by_sim)-qnorm(0.975)*sqrt((rowMeans(Cover_by_sim)*(1-rowMeans(Cover_by_sim)))/nsim),
+                           "Cover_up" = rowMeans(Cover_by_sim)+qnorm(0.975)*sqrt((rowMeans(Cover_by_sim)*(1-rowMeans(Cover_by_sim)))/nsim))
+  rownames(out_result ) <- row.names(hat_estimate[[1]])
+  return(out_result = out_result)
+}
+
+```
+
+
+```{r}
+combine_MI_lm <- function(manyresult) {
+  # Vérification
+  if (!all(sapply(manyresult, inherits, what = "lm"))) {
+    stop("Tous les éléments de 'manyresult' doivent être des objets 'lm'.")
+  }
+
+  estimates <- list()
+  variances <- list()
+
+  for (i in seq_along(manyresult)) {
+    mod.sum <- summary(manyresult[[i]])
+    coef_i <- mod.sum$coefficients[, "Estimate"]
+    se_i   <- mod.sum$coefficients[, "Std. Error"]
+
+    estimates[[i]] <- coef_i
+    variances[[i]] <- se_i^2
+  }
+
+  estimates_mat <- do.call(rbind, estimates)
+  variances_mat <- do.call(rbind, variances)
+
+  m <- length(manyresult)
+
+  Q_bar <- colMeans(estimates_mat)
+  U_bar <- colMeans(variances_mat)
+  B     <- apply(estimates_mat, 2, var) * (m / (m - 1))
+  T     <- U_bar + (1 + 1 / m) * B
+  se    <- sqrt(T)
+
+  # Degrés de liberté (formule classique de Rubin, 1987)
+  df <- (m - 1) * (T / B)^2
+
+  # Intervalles de confiance
+  CI_low <- Q_bar - qt(0.975, df) * se
+  CI_up  <- Q_bar + qt(0.975, df) * se
+
+  result <- data.frame(
+    Estimate = Q_bar,
+    CI_low = CI_low,
+    CI_up = CI_up,
+    row.names = colnames(estimates_mat),
+    check.names = FALSE
+  )
+
+  return(result)
+}
+
+```
+
+
+```{r}
+compute_mar <- function(data){
+  mar.model <- with(data, lm(Y ~  I(X1 >= 0) + X2))
+  mar.est <- combine_MI_lm(mar.model)
+  colnames(mar.est) <- c("Estimate",  "CI_low", "CI_up")
+  return(mar.est)
+}
+```
+
+
+
+
+```{r}
+compute_MI_IWP_lm <- function(data_list) {
+  estimates <- list()
+  robust_variances <- list()
+  
+  for (i in seq_along(data_list)) {
+    data_i <- data_list[[i]]
+    
+    # Vérification de la présence de w et des colonnes nécessaires
+    if (!all(c("Y", "X1","X2", "w") %in% names(data_i))) {
+      stop(paste("Les variables 'Y', 'X1', 'X2' ou 'w' sont absentes dans data_list[[", i, "]]"))
+    }
+    
+    # Ajustement du modèle pondéré
+    model <- lm(Y ~  I(X1 >= 0) + X2, data = data_i, weights = data_i$w)
+    
+    # Estimations des coefficients
+    estimates[[i]] <- coef(model)
+    
+    # Matrice de variance robuste HC0
+    vcov_robust <- sandwich::vcovHC(model, type = "HC0")
+    robust_variances[[i]] <- diag(vcov_robust)
+  }
+
+  # Convertir en matrices
+  estimates_mat <- do.call(rbind, estimates)
+  robust_var_mat <- do.call(rbind, robust_variances)
+
+  m <- length(data_list)  # nombre d'imputations
+  
+  # Moyenne des coefficients (Q̄)
+  Q_bar <- colMeans(estimates_mat)
+  
+  # Moyenne des variances robustes (Ū)
+  U_bar <- colMeans(robust_var_mat)
+  
+  # Variance inter-imputation (B)
+  B <- apply(estimates_mat, 2, var) * (m / (m - 1))
+  
+  # Variance totale combinée (T)
+  T <- U_bar + (1 + 1/m) * B
+  se_total <- sqrt(T)
+
+   # df: degrés de liberté de Rubin
+   df <- (m - 1)*(1 + U_bar/B)^2
+  
+  # Intervalles de confiance
+  CI_low <- Q_bar - qt(0.975, df = df) * se_total
+  CI_up  <- Q_bar + qt(0.975, df = df) * se_total
+
+  # Résultat sous forme de data.frame
+  mar.est <- data.frame(
+    Estimate = Q_bar,
+    CI_low = CI_low,
+    CI_up = CI_up
+  )
+
+  return(mar.est)
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+t2 <- Sys.time()
+time_sim <- t2 - t1
+time_sim
+```
+
+## Full Data (Simulated Data Without Missing Values)
+
+
+```{r}
+ti_full <- Sys.time()
+```
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("data_sim"))
+
+Full.mod <- parLapply(cl, data_sim, function(data) {
+  lm(Y ~  I(X1 >= 0) + X2, data = data)
+})
+
+Full.est <- parLapply(cl, Full.mod, function(model) {
+  summ <- summary(model)
+  coef <- summ$coefficients[, "Estimate"]
+  se <- summ$coefficients[, "Std. Error"]
+  est_df <- data.frame(
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se,
+    CI_up = coef + qnorm(0.975) * se
+  )
+  return(est_df)
+})
+stopCluster(cl)
+
+```
+
+
+
+
+```{r}
+estisimule <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = Full.est)
+estisimule$bias <- bias_relative(value = estisimule$True, hat_estimate = estisimule$Estimate)
+estisimule$Mse <- mse(value = estisimule$True, 
+                      estimate = estisimule$Estimate, 
+                      sd = estisimule$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estisimule[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+```{r}
+tf_full <- Sys.time()
+
+time_full = tf_full - ti_full
+time_full <-time_full + time_sim
+time_full
+```
+
+
+
+# Classical methods
+
+## completes cases analysis (MCAR)
+
+
+```{r}
+ti_mcar <- Sys.time()
+```
+
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("data_mar"))
+MCAR.mod <- parLapply(cl, data_mar, function(data) {
+  lm(Y ~  I(X1 >= 0) + X2, data = data)
+})
+
+MCAR.est <- parLapply(cl, MCAR.mod, function(model) {
+  summ <- summary(model)
+  coef <- summ$coefficients[, "Estimate"]
+  se <- summ$coefficients[, "Std. Error"]
+  est_df <- data.frame(
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se,
+    CI_up = coef + qnorm(0.975) * se
+  )
+  return(est_df)
+})
+stopCluster(cl) 
+```
+
+
+
+```{r}
+estimcar <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = MCAR.est)
+estimcar$bias <- bias_relative(value = estimcar$True, hat_estimate = estimcar$Estimate)
+estimcar$Mse <- mse(value = estimcar$True, 
+                      estimate = estimcar$Estimate, 
+                      sd = estimcar$Emp_sd)
+```
+
+
+
+```{r}
+knitr::kable(round(estimcar[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+
+```{r}
+tf_mcar <- Sys.time()
+
+time_mcar = tf_mcar - ti_mcar
+time_mcar <- time_mcar +  time_sim
+time_mcar
+```
+
+
+## Semi-Parametric Approach: Inverse Probability Weighting (MAR)
+
+```{r}
+ti_ipw <- Sys.time()
+```
+
+
+### Trade-off Parameter
+
+```{r}
+# kappa = 1 
+# kappa = 0.9
+# kappa = 0.8 
+ kappa = 0.75 
+# kappa = 0.7 
+# kappa = 0.6 
+# kappa = 0.5 
+# kappa = 0.4 
+# kappa = 0.3
+#kappa = 0.1
+# kappa = 0
+```
+
+
+
+
+```{r}
+set.seed(312)
+data_mar <- lapply(1:nsim, function(s) {
+  work.model <- glm(R ~  Y, data = data_mar[[s]], family = binomial)
+  predicted <-  pmax(pmin(predict(work.model, type = "response"), 0.99), 0.01)
+  data_mar[[s]]$w <- ifelse(
+    data_mar[[s]]$R == 1,
+    1 / predicted, 
+    kappa*1 + (1-kappa)*(1 / (1-predicted))
+  )
+  
+  return(data_mar[[s]])
+})
+```
+
+
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("data_mar"))
+invisible(clusterCall(cl, function() library(sandwich)))
+
+iwp.mod <- parLapply(cl, data_mar, function(data) {
+  lm(Y ~  I(X1 >= 0) + X2, weights = w, data = data, na.action = na.omit)
+})
+
+iwp.est <- parLapply(cl, iwp.mod, function(model) {
+  summ <- summary(model)
+  coef <- summ$coefficients[, "Estimate"]
+  se.robust <- sqrt(diag(sandwich::vcovHC(model, type = "HC0")))
+  est_df <- data.frame(
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se.robust,
+    CI_up = coef + qnorm(0.975) * se.robust
+  )
+  return(est_df)
+})
+
+stopCluster(cl)
+```
+
+
+
+
+```{r}
+estimar_iwp <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = iwp.est)
+estimar_iwp$bias <- bias_relative(value = estimar_iwp$True, hat_estimate = estimar_iwp$Estimate)
+estimar_iwp$Mse <- mse(value = estimar_iwp$True, 
+                    estimate = estimar_iwp$Estimate, 
+                    sd = estimar_iwp$Emp_sd)
+
+```
+
+
+
+```{r}
+knitr::kable(round(estimar_iwp[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+
+
+
+
+```{r}
+tf_ipw <- Sys.time()
+
+time_ipw = tf_ipw - ti_ipw
+time_ipw <- time_ipw + time_sim
+time_ipw
+```
+
+
+### Number of imputations
+
+
+```{r}
+M = 20
+```
+
+
+## Parametric Imputation with the `mice` Package (MAR)
+
+
+```{r}
+ti_miceP <- Sys.time()
+```
+
+
+```{r}
+ cl <- makeCluster(detectCores())
+clusterExport(cl, c("data_mar", "M")) 
+invisible(clusterCall(cl, PACKAGE, c("mice")))
+mice_P_data <- parLapply(cl, 1:nsim, function(s) {
+  mice(data= data_mar[[s]][,c("X1", "X2", "Y")],  
+    m = M,         
+    maxit = 10,      
+    method = c("norm.nob","norm.nob", "norm.nob"),
+    print = FALSE,
+    seed = 10000
+  )
+})
+
+stopCluster(cl)
+```
+
+
+```{r}
+
+mice_P_data <- lapply(1:nsim, function(s) {
+  combined_data <- lapply(1:M, function(m) {
+    mice::complete(mice_P_data[[s]], m)
+  })
+  mitml::as.mitml.list(combined_data)
+})
+
+
+```
+
+
+
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("mice_P_data","combine_MI_lm","compute_mar"))
+invisible(clusterCall(cl, PACKAGE, c("mice","mitml")))
+tout_mice.est <- parLapply(cl,  1:nsim, function(s){
+  compute_mar(data = mice_P_data[[s]])
+})
+stopCluster(cl)
+```
+
+
+
+
+
+
+```{r}
+estimar_P_mice <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = tout_mice.est)
+estimar_P_mice$bias <- bias_relative(value = estimar_P_mice$True, hat_estimate = estimar_P_mice$Estimate)
+estimar_P_mice$Mse <- mse(value = estimar_P_mice$True, 
+                      estimate = estimar_P_mice$Estimate, 
+                      sd = estimar_P_mice$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estimar_P_mice[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+```{r}
+tf_miceP <- Sys.time()
+
+time_miceP = tf_miceP - ti_miceP
+time_miceP <- time_miceP  + time_sim
+time_miceP
+```
+
+
+
+## Using `mice` with Parametric and Random Forest Methods
+
+
+```{r}
+ti_Prf <- Sys.time()
+
+```
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("data_mar", "M")) 
+invisible(clusterCall(cl, PACKAGE, c("mice")))
+mice_P_rf_data <- parLapply(cl, 1:nsim, function(s) {
+  mice(data= data_mar[[s]][,c("X1", "X2", "Y")],  
+       m = M,         
+       maxit = 10,      
+       method = c("rf","norm.nob", "norm.nob"),
+       print = FALSE,
+       seed = 10000
+  )
+})
+
+stopCluster(cl)
+```
+
+
+```{r}
+
+mice_P_rf_data <- lapply(1:nsim, function(s) {
+  combined_data <- lapply(1:M, function(m) {
+    mice::complete(mice_P_rf_data[[s]], m)
+  })
+  mitml_object <- mitml::as.mitml.list(combined_data)
+  return(mitml_object)
+})
+
+
+```
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("mice_P_rf_data","combine_MI_lm","compute_mar"))
+invisible(clusterCall(cl, PACKAGE, c("mice","mitml")))
+tout_mice_p_rf_.est <- parLapply(cl,  1:nsim, function(s){
+  compute_mar(data = mice_P_rf_data[[s]])
+})
+stopCluster(cl)
+```
+
+
+
+
+
+
+```{r}
+estimar_P_rf_mice <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = tout_mice_p_rf_.est)
+estimar_P_rf_mice$bias <- bias_relative(value = estimar_P_rf_mice$True, hat_estimate = estimar_P_rf_mice$Estimate)
+estimar_P_rf_mice$Mse <- mse(value = estimar_P_rf_mice$True, 
+                          estimate = estimar_P_rf_mice$Estimate, 
+                          sd = estimar_P_rf_mice$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estimar_P_rf_mice[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+```{r}
+tf_Prf <- Sys.time()
+
+time_Prf = tf_Prf - ti_Prf
+time_Prf <- time_Prf  + time_sim
+time_Prf
+```
+
+## Nonparametric Imputation: Random Forest (MAR)
+
+
+
+```{r}
+ti_miceNP <- Sys.time()
+```
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("data_mar", "M")) 
+invisible(clusterCall(cl, PACKAGE, c("mice","ranger")))
+mice.rf.data <- parLapply(cl, 1:nsim, function(s) {
+  mice(data= data_mar[[s]][,c("X1", "X2", "Y")],  
+       m = M,         
+       maxit = 10,      
+       method = c("rf","rf", "rf"),
+       print = FALSE,
+       seed = 10000
+  )
+})
+
+stopCluster(cl)
+```
+
+
+
+
+```{r}
+mice.rf.data <- lapply(1:nsim, function(s) {
+  combined_data <- lapply(1:M, function(m) {
+    mice::complete(mice.rf.data[[s]], m)
+  })
+  mitml_object <- mitml::as.mitml.list(combined_data)
+  return(mitml_object)
+})
+
+```
+
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("mice.rf.data","combine_MI_lm","compute_mar"))
+invisible(clusterCall(cl, PACKAGE, c("mice","ranger","mitml")))
+tout_mice.rf.est <- parLapply(cl,  1:nsim, function(s){
+  compute_mar(data = mice.rf.data[[s]])
+})
+stopCluster(cl)
+
+```
+
+
+
+```{r}
+estimar_mice_RF_NP <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = tout_mice.rf.est)
+estimar_mice_RF_NP$bias <- bias_relative(value = estimar_mice_RF_NP$True, hat_estimate = estimar_mice_RF_NP$Estimate)
+estimar_mice_RF_NP$Mse <- mse(value = estimar_mice_RF_NP$True, 
+                          estimate = estimar_mice_RF_NP$Estimate, 
+                          sd = estimar_mice_RF_NP$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estimar_mice_RF_NP[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+
+```{r}
+tf_miceNP <- Sys.time()
+
+time_miceNP = tf_miceNP - ti_miceNP
+time_miceNP <- time_miceNP  + time_sim
+time_miceNP 
+```
+
+
+# Hybrid Methods
+
+## Hybrid 1 (without weighting): Parametric MI and Nonparametric MI (MAR)
+
+
+```{r}
+ti_micePNP <- Sys.time()
+```
+
+
+```{r}
+P_NP_data <- lapply(1:nsim, function(s) {
+  temp_data <- vector("list", M)
+  for (i in 1:(M/2)) {
+    temp_data[[i]] <- mice_P_data[[s]][[i]]
+    temp_data[[i + (M/2)]] <- mice.rf.data[[s]][[i]]
+  }
+  temp_data <- mitml::as.mitml.list(temp_data)
+  temp_data
+})
+```
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("P_NP_data","combine_MI_lm","compute_mar"))
+invisible(clusterCall(cl, PACKAGE, c("mice", "mitml","ranger")))
+tout_P_NP.est <- parLapply(cl,  1: nsim, function(s){
+  compute_mar(data = P_NP_data[[s]])
+})
+stopCluster(cl)
+
+```
+
+
+```{r}
+estimar_mice_P_NP <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = tout_P_NP.est)
+estimar_mice_P_NP$bias <- bias_relative(value = estimar_mice_P_NP$True, hat_estimate = estimar_mice_P_NP$Estimate)
+estimar_mice_P_NP$Mse <- mse(value = estimar_mice_P_NP$True, 
+                              estimate = estimar_mice_P_NP$Estimate, 
+                              sd = estimar_mice_P_NP$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estimar_mice_P_NP[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+
+
+
+```{r}
+tf_micePNP <- Sys.time()
+
+time_micePNP = tf_micePNP - ti_micePNP
+time_micePNP <- time_micePNP + time_miceP + time_miceNP + time_sim
+time_micePNP
+```
+
+
+## Hybrid Methods with Weighting
+
+### Hybrid 2: Parametric MI and IPW (MAR)
+
+
+
+```{r}
+ti_PIPW <- Sys.time()
+```
+
+
+
+```{r}
+MI.P_IWP_data <- lapply(1:nsim, function(s) {
+  imputation <- lapply(1:M, function(m) {
+    cbind(mice_P_data[[s]][[m]],
+          data_mar[[s]][, c("R", "w")]
+    )
+  })
+})
+
+```
+
+
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("MI.P_IWP_data","compute_MI_IWP_lm"))
+invisible(clusterCall(cl, PACKAGE, c("mice","mitml")))
+tout_miceP_iwp.est <- parLapply(cl,  1:nsim, function(s){
+  compute_MI_IWP_lm(data = MI.P_IWP_data[[s]])
+})
+stopCluster(cl)
+```
+
+
+```{r}
+estimar_mice_P_iwp <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = tout_miceP_iwp.est)
+estimar_mice_P_iwp$bias <- bias_relative(value = estimar_mice_P_iwp$True, hat_estimate = estimar_mice_P_iwp$Estimate)
+estimar_mice_P_iwp$Mse <- mse(value = estimar_mice_P_iwp$True, 
+                             estimate = estimar_mice_P_iwp$Estimate, 
+                             sd = estimar_mice_P_iwp$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estimar_mice_P_iwp[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+
+
+```{r}
+tf_PIPW <- Sys.time()
+
+time_PIPW = tf_PIPW - ti_PIPW
+time_PIPW <- time_PIPW + time_miceP + time_sim
+time_PIPW
+```
+
+
+## Hybrid 3: Non-parametric MI and IPW (MAR)
+
+
+
+```{r}
+ti_NPIPW <- Sys.time()
+```
+
+
+
+```{r}
+MI.NP_IWP_data <- lapply(1:nsim, function(s) {
+  lapply(1:M, function(m) {
+    cbind(mice.rf.data[[s]][[m]],
+          data_mar[[s]][, c("R", "w")]
+    )
+  })
+})
+
+```
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("MI.NP_IWP_data","compute_MI_IWP_lm"))
+invisible(clusterCall(cl, PACKAGE, c("mice","mitml","ranger")))
+tout_miceNP_iwp.est <- parLapply(cl,  1:nsim, function(s){
+  compute_MI_IWP_lm(data = MI.NP_IWP_data[[s]])
+})
+stopCluster(cl)
+```
+
+
+```{r}
+estimar_mice_NP_iwp <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = tout_miceNP_iwp.est)
+estimar_mice_NP_iwp$bias <- bias_relative(value = estimar_mice_NP_iwp$True, hat_estimate = estimar_mice_NP_iwp$Estimate)
+estimar_mice_NP_iwp$Mse <- mse(value = estimar_mice_NP_iwp$True, 
+                              estimate = estimar_mice_NP_iwp$Estimate, 
+                              sd = estimar_mice_NP_iwp$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estimar_mice_NP_iwp[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+
+
+```{r}
+tf_NPIPW <- Sys.time()
+
+time_NPIPW = tf_NPIPW - ti_NPIPW
+time_NPIPW <- time_NPIPW + time_miceNP + nsim
+time_NPIPW
+```
+
+
+## Hybrid 4: Parametric MI, Non-Parametric MI, and IPW (MAR)
+
+
+```{r}
+ti_PNPIPW <- Sys.time()
+```
+
+
+
+```{r}
+P_NP_IWP_data <- lapply(1:nsim, function(s){
+  lapply(1:M, function(m){
+    cbind(P_NP_data[[s]][[m]],
+          data_mar[[s]][, c("R", "w")])
+  })
+})
+
+```
+
+
+```{r}
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("P_NP_IWP_data","compute_MI_IWP_lm"))
+invisible(clusterCall(cl, PACKAGE, c("mice","mitml","ranger")))
+tout_mice_P_NP_iwp.est <- parLapply(cl,  1:nsim, function(s){
+  compute_MI_IWP_lm(data = P_NP_IWP_data[[s]])
+})
+stopCluster(cl)
+```
+
+
+```{r}
+estimar_mice_P_NP_iwp <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = tout_mice_P_NP_iwp.est)
+estimar_mice_P_NP_iwp$bias <- bias_relative(value = estimar_mice_P_NP_iwp$True, hat_estimate = estimar_mice_P_NP_iwp$Estimate)
+estimar_mice_P_NP_iwp$Mse <- mse(value = estimar_mice_P_NP_iwp$True, 
+                              estimate = estimar_mice_P_NP_iwp$Estimate, 
+                              sd = estimar_mice_P_NP_iwp$Emp_sd)
+```
+
+
+```{r}
+knitr::kable(round(estimar_mice_P_NP_iwp[,c("bias","Emp_sd","CI_width","Cover","Mse")],4))
+```
+
+
+```{r}
+tf_PNPIPW <- Sys.time()
+
+time_PNPIPW = tf_PNPIPW - ti_PNPIPW
+time_PNPIPW <-  time_PNPIPW + time_miceP + time_miceNP + nsim
+time_PNPIPW
+```
+
+## For All Methods
+
+### Bias
+
+
+```{r}
+all_bias <- data.frame(Full = estisimule[,"bias"],
+                           CC = estimcar[,"bias"],
+                           Iwp = estimar_iwp[,"bias"],
+                           Mice.P = estimar_P_mice[,"bias"],
+                           RF.NP = estimar_mice_RF_NP[,"bias"],
+                           Hybrid0 = estimar_P_rf_mice[,"bias"],
+                           Hybrid1 = estimar_mice_P_NP[,"bias"],
+                           Hybrid2 = estimar_mice_P_iwp[,"bias"],
+                           Hybrid3 = estimar_mice_NP_iwp[,"bias"],
+                           Hybrid4 = estimar_mice_P_NP_iwp[,"bias"])
+rownames(all_bias) <- rownames(estisimule)
+knitr::kable(round(all_bias, 3))
+```
+
+### Confidence Interval Width
+
+
+```{r}
+all_CI_width <- data.frame(
+                           Full = estisimule[,"CI_width"],
+                           CC = estimcar[,"CI_width"],
+                           Iwp = estimar_iwp[,"CI_width"],
+                           Mice.P = estimar_P_mice[,"CI_width"],
+                           RF.NP = estimar_mice_RF_NP[,"CI_width"],
+                          Hybrid0 = estimar_P_rf_mice[,"CI_width"],
+                           Hybrid1 = estimar_mice_P_NP[,"CI_width"],
+                           Hybrid2 = estimar_mice_P_iwp[,"CI_width"],
+                           Hybrid3 = estimar_mice_NP_iwp[,"CI_width"],
+                           Hybrid4 = estimar_mice_P_NP_iwp[,"CI_width"])
+rownames(all_CI_width) <- rownames(estisimule)
+knitr::kable(round(all_CI_width, 3))
+```
+
+
+### Coverage
+
+
+```{r}
+all_Cover <- data.frame(
+                           Full = estisimule[,"Cover"],
+                           CC = estimcar[,"Cover"],
+                           Iwp = estimar_iwp[,"Cover"],
+                           Mice.P = estimar_P_mice[,"Cover"],
+                           RF.NP = estimar_mice_RF_NP[,"Cover"],
+                           Hybrid0 = estimar_P_rf_mice[,"Cover"],
+                           Hybrid1 = estimar_mice_P_NP[,"Cover"],
+                           Hybrid2 = estimar_mice_P_iwp[,"Cover"],
+                           Hybrid3 = estimar_mice_NP_iwp[,"Cover"],
+                           Hybrid4 = estimar_mice_P_NP_iwp[,"Cover"])
+rownames(all_Cover) <- rownames(estisimule)
+knitr::kable(round(all_Cover*100, 3))
+```
+
+
+### Mean Squared Error
+
+
+```{r}
+all_Mse <- data.frame(
+                           Full = estisimule[,"Mse"],
+                           CC = estimcar[,"Mse"],
+                           Iwp = estimar_iwp[,"Mse"],
+                           Mice.P = estimar_P_mice[,"Mse"],
+                           RF.NP = estimar_mice_RF_NP[,"Mse"],
+                            Hybrid0 = estimar_P_rf_mice[,"Mse"],
+                           Hybrid1 = estimar_mice_P_NP[,"Mse"],
+                           Hybrid2 = estimar_mice_P_iwp[,"Mse"],
+                           Hybrid3 = estimar_mice_NP_iwp[,"Mse"],
+                           Hybrid4 = estimar_mice_P_NP_iwp[,"Mse"])
+rownames(all_Mse) <- rownames(estisimule)
+knitr::kable(format(all_Mse, digits = 3, scientific = TRUE))
+```
+
+
+```{r}
+tf <- Sys.time()
+code_time = tf - ti
+code_time
+```
