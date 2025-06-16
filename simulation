@@ -1,133 +1,532 @@
 ---
-title: "Méthodes hybrides"
-author: "Abdulaye Dioni"
-date: "`r Sys.Date()`"
+title: "simulation_support_data"
 output: 
   html_document: 
     toc: true
-    highlight: pygments
+    highlight: tango
     theme: cerulean
     number_sections: true
+date: "`r Sys.Date()`"
 ---
 
 
-```{r}
-########### Méthodes hybrides: Simulation #############
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE, 
+  warning = FALSE, 
+  fig.keep = "none"
+)
+```
 
-# sink("scenario1.txt")
-  
- 
+
+
+
+```{r}
 ti <- Sys.time()
 
-## Packages 
 
+library(Hmisc)
 library(survival)
+#library(ggthemes)
 library(parallel)
 library(mice)
 library(mitml)
-library(dplyr)
-library(ranger)
+library(splines)
+#library(survminer)
+
 ```
 
-# Fonction pour simuler les données de survie
+
+
+
+## Loading the Data
+
+```{r}
+getHdata(support)
+getHdata(support2)
+support.name <- names(support)
+support.name
+```
+
+Restricted variable selection was performed according to the recommendations provided on hbiostat.org/data/repo/supportdesc.
+
+```{r}
+support2_data <- support2[, support.name] 
+dim(support2_data)
+```
+
+
 
 
 ```{r}
+support2_data <- as.data.frame(lapply(support2_data, function(col) {
+  if (inherits(col, "labelled")) {
+    return(as.vector(col))
+  } else {
+    return(col)
+  }
+}))
 
-simulate_Cox_weibull <- function(n, nu, eta, beta, lambda) {
-  X3 <- rnorm(n, 0, 1)
-  X2 <- factor(rbinom(n, size = 1, prob = 0.4))
-  eta_X1 <- model.matrix(as.formula(formula_X1), data.frame(X2 = X2, X3 = X3))[,-1] %*% as.matrix(para_X1)
-  prob_X1 <-  t(apply(eta_X1, 1, function(x) exp(x - max(x)) / sum(exp(x - max(x)))))
-  X1 <-factor(apply(prob_X1, 1, function(p) sample(1:length(p), 1, prob = p)))
-  linear_predictor <- model.matrix(~ X1 + X2 + X3)[, -1]%*% beta
-  T_e <- (-log(runif(n)) / (nu * exp(linear_predictor)))^(1 / eta)
-  T_c <- rexp(n, rate = lambda)
-  delta <- as.factor(ifelse(T_e <= T_c, 1, 0))  # 1 = événement, 0 = censuré
-  time <- round(pmin(T_e, T_c),2)
-  return(data.frame(id = seq_len(n), time = time, delta = delta, X1 = X1, X2 = X2, X3 = X3))
+```
+
+
+```{r}
+dim(support2_data)
+names(support2_data)
+```
+
+
+```{r}
+summary(support2_data)
+```
+
+As part of the illustration of hybrid approaches, the analysis is restricted to a subset of clinically relevant variables measured at admission.
+
+
+
+```{r}
+support2_data <- support2_data[, c("d.time","death","age","sex","income","sod", "resp")]
+
+```
+
+
+```{r}
+summary(support2_data)
+```
+
+
+```{r}
+support2_data$income <- as.character(support2_data$income)
+support2_data$income[support2_data$income %in% c("$25-$50k", ">$50k")] <- ">$25k"
+support2_data$income <- factor(support2_data$income,
+                            levels = c("under $11k", "$11-$25k" ,   ">$25k"),
+                            labels = c("<11k", "11–25k", ">25k")
+)
+```
+
+
+```{r}
+support2_data$resp <- ifelse(support2_data$resp == 0, NA, support2_data$resp)
+support2_data <- support2_data[!support2_data$resp %in% c(0), ]
+support2_data$death <- as.factor(support2_data$death)
+support2_data$d.time <- support2_data$d.time/(30.4375*3) 
+```
+
+```{r}
+dim(support2_data)
+```
+
+
+
+
+
+ 
+ Initial logistic model to predict the probability of observing 'income'. Stepwise selection based on the AIC criterion is used to identify the most parsimonious and best-fitting model.
+
+```{r}
+support2_data$R.income <- as.factor(ifelse(is.na(support2_data$income),0,1))
+vars <- c("R.income", "age", "sex", "death", "d.time", "resp", "sod")
+support2_data <- support2_data[complete.cases(support2_data[, vars]), ]
+
+mis_mod <- MASS::stepAIC(
+  glm(R.income ~ age + sex + death + d.time + resp + sod,
+      data = support2_data,
+      family = binomial),
+  direction = "both",
+  trace = FALSE
+)
+
+
+summary(mis_mod)
+```
+
+
+
+The predictors of missingness in `income` sont `age`, `death` and `sod`
+
+
+## Complete data available for analysis
+
+
+```{r}
+mydata <- support2_data[complete.cases(support2_data), ]
+dim(mydata)
+
+```
+
+
+# Assessment of the linearity of continuous variables
+
+```{r}
+smoothSEcurve <- function(yy, xx) {
+  xx.list <- min(xx) + ((0:100)/100)*(max(xx) - min(xx))
+  yy.xx <- predict(loess(yy ~ xx), se=T,
+                   newdata=data.frame(xx=xx.list))
+  lines(yy.xx$fit ~ xx.list, lwd=2,pch = 19, col = "red")
+  lines(yy.xx$fit -
+          qt(0.975, yy.xx$df)*yy.xx$se.fit ~ xx.list, lwd=2, lty=2,col = "blue")
+  lines(yy.xx$fit +
+          qt(0.975, yy.xx$df)*yy.xx$se.fit ~ xx.list,lwd=2, lty=2, col = "blue")
 }
 
 ```
 
 
-# Paramètres de la fonction de  simulation
+```{r}
+coxph_0 <- coxph(Surv(d.time, death==1) ~ 1, data = mydata)
+r.martingale <- residuals(coxph_0, type="martingale")
+```
+
+#### For `age`
+
 
 ```{r}
-set.seed(123)
-n=1000 # Taille de l'échantillon
-nu = 1.2 # Paramètre de forme de la distribution de weibull
-eta =10 #  Paramètre d'échelle de la distribution de weibull
-beta= c(-log(2),log(3),-log(1.5),log(2))
+# Modèle linéaire simple
+age_linear <- coxph(Surv(d.time, death == 1) ~ age, data = mydata)
 
-formula_X1 <- "~ X2 + X3"
-para_X1 <- matrix(c(rep(1,2), rep(1,2),rep(1,2) ),ncol = 3)
+# Logarithme
+mydata$logage <- as.vector(log(mydata$age))
+mydata$logage <- as.numeric(scale(mydata$logage, center = TRUE, scale = FALSE))
+age_log <- coxph(Surv(d.time, death == 1) ~ logage, data = mydata)
 
-# Paramètre lambda pour introduire la censure dans les données
+# Terme quadratique
+mydata$agecarre <- mydata$age + mydata$age^2
+fit2 <- coxph(Surv(d.time, death == 1) ~  agecarre, data = mydata)
 
-lambda = 0.3 # scénario 1
-#lambda = 0.5 # scénario 2
-#lambda = 0.7 # scénario 3 # Non présenter dans le papier
-#lambda = 0.9 # scénario 4 # Non présenter dans le papier
+# Racine carrée
+mydata$agesqrt <- sqrt(mydata$age)
+age_sqrt <- coxph(Surv(d.time, death == 1) ~ agesqrt, data = mydata)
+
+# Inverse
+mydata$ageinv <- 1 / mydata$age
+age_inv <- coxph(Surv(d.time, death == 1) ~ ageinv, data = mydata)
+
+# Spline naturelle (3 degrés de liberté)
+age_spline <- coxph(Surv(d.time, death == 1) ~ ns(age, df = 3), data = mydata)
+
+# Comparaison des AIC
+AIC(age_linear, age_log, fit2, age_sqrt, age_inv, age_spline)
 ```
 
 
 
-# Nombre de simulation
+
 
 ```{r}
-nsim = 1000
+# Graphique 1 : Martingale vs age
+plot(r.martingale ~ mydata$age,
+     col = "gray", pch = 19, xlab = "Age", ylab = "Martingale Residuals of Null Cox Model",
+     main = "Martingale residuals vs Age")
+smoothSEcurve(r.martingale, mydata$age)
 
 ```
 
 
-# Données simulées
+```{r,}
+# Graphique 2 : Martingale vs 1/age (age inverse)
+plot(r.martingale ~ mydata$logage,
+     col = "gray", pch = 19, xlab = "log(Age)", ylab = "Martingale Residuals of Null Cox Model", main = "Martingale residuals vs log(Age)")
+smoothSEcurve(r.martingale, mydata$logage)
+
+```
+
+
+
+The analysis of Martingale residuals suggests an approximately linear effect of log-age on the log-hazard, justifying its inclusion as a continuous covariate in the model.
+
+
+
+
+
+
+
+
+
+### For `resp`
+
 
 ```{r}
-datas <- lapply(1:nsim, function(s) {
-  data <- simulate_Cox_weibull(n=n,nu =nu, eta = eta,beta = beta,lambda = lambda)
-  return(data)
+# Modèle linéaire simple
+resp_linear <- coxph(Surv(d.time, death == 1) ~ resp, data = mydata)
+
+# Logarithme
+resp_log <- coxph(Surv(d.time, death == 1) ~ log(resp), data = mydata)
+
+# Terme quadratique
+mydata$respcarre <- mydata$resp + mydata$resp^2
+fit2 <- coxph(Surv(d.time, death == 1) ~ respcarre, data = mydata)
+
+# Racine carrée
+mydata$respsqrt <- sqrt(mydata$resp)
+resp_sqrt <- coxph(Surv(d.time, death == 1) ~ respsqrt, data = mydata)
+
+# Inverse
+mydata$respinv <- 1 / mydata$resp
+resp_inv <- coxph(Surv(d.time, death == 1) ~ respinv, data = mydata)
+
+# Spline naturelle (3 degrés de liberté)
+resp_spline <- coxph(Surv(d.time, death == 1) ~ ns(resp, df = 3), data = mydata)
+
+# Comparaison des AIC
+AIC(resp_linear, resp_log, fit2, resp_sqrt, resp_inv, resp_spline)
+```
+
+
+
+
+### For `sod`
+
+```{r}
+# Modèle linéaire simple
+sod_linear <- coxph(Surv(d.time, death == 1) ~ sod, data = mydata)
+
+# Logarithme
+sod_log <- coxph(Surv(d.time, death == 1) ~ log(sod), data = mydata)
+
+# Terme quadratique
+mydata$sodcarre <- mydata$sod  + mydata$sod^2
+fit2 <- coxph(Surv(d.time, death == 1) ~  sodcarre, data = mydata)
+
+# Racine carrée
+mydata$sodsqrt <- sqrt(mydata$sod)
+sod_sqrt <- coxph(Surv(d.time, death == 1) ~ sodsqrt, data = mydata)
+
+# Inverse
+mydata$sodinv <- 1 / mydata$sod
+sod_inv <- coxph(Surv(d.time, death == 1) ~ sodinv, data = mydata)
+
+# Spline naturelle (3 degrés de liberté)
+sod_spline <- coxph(Surv(d.time, death == 1) ~ ns(sod, df = 3), data = mydata)
+
+# Comparaison des AIC
+AIC(sod_linear, sod_log, fit2, sod_sqrt, sod_inv, sod_spline)
+```
+
+
+
+
+
+
+
+## Consideration of the linearity assumption
+
+* `age`: : logarithme
+
+* `sod`: linéaire
+
+* `resp` : linéaire
+
+
+
+
+
+
+
+## Assessment of the Cox proportional hazards assumption
+
+### Graphical approaches using log-log survival curves for categorical variables
+
+
+
+
+
+
+```{r}
+log_log_sex <- survfit(Surv(d.time, death==1) ~ sex, data = mydata)
+plot(log_log_sex, fun = "cloglog", col = 1:2, xlab = "years", ylab = "log-log(Survival)")
+title("log-log plot for sex (KM curve)")
+legend("topleft", legend = levels(mydata$sex), col = 1:2, lty = 1)
+
+```
+
+
+```{r}
+log_log_income <- survfit(Surv(d.time, death == 1) ~ income, data = mydata)
+
+plot(log_log_income, fun = "cloglog", 
+     col = 1:length(unique(mydata$income)), 
+     xlab = "Time (in quarters, 3-month periods)", ylab = "log-log(Survival)")
+
+title("Log-log plot for income (KM curve)")
+
+legend("bottomright", legend = levels(mydata$income), 
+       col = 1:length(unique(mydata$income)), lty = 1)
+
+```
+
+The proportional hazards (PH) assumption appears to hold for the variable `income`.
+
+## Checking the Proportional Hazards Assumption with the `cox.zph` Function
+
+The verification is performed using the `cox.zph` function from the `survival` package.
+
+Transformations applied to continuous variables:
+
+- `age`: logarithmic transformation (`log(age)`)
+- `sod`: inverse transformation (`1/sod`)
+- `resp`: quadratic transformation (`resp + resp^2`)
+
+
+
+
+
+
+##   Proportionality (PH) and Linearity Assumptions
+
+
+```{r}
+
+PH_data_clean <- coxph(Surv(d.time, death==1) ~ age + sex +   income + sod+   resp  , data = mydata)
+```
+
+
+```{r}
+reszphkm <- cox.zph(PH_data_clean)
+reszphkm
+```
+
+## Assessment of Proportional Hazards (PH) and Linearity Assumptions
+
+- **age**: strong violation of the PH assumption; include a time interaction (e.g., `tt(age)`).
+- **sex**: significant violation; consider stratifying the model by `sex`.
+- **income**: no violation detected.
+- **resp**: slight violation; may require further evaluation.
+- **sod**: no violation detected.
+- **GLOBAL test**: overall PH assumption is violated.
+
+### Linearity Assumption (based on martingale residuals)
+
+- **age**: log-transformation applied.
+- **sod**: linear form appropriate.
+- **resp**: linear form appropriate.
+
+
+
+
+## Study data
+
+
+```{r}
+sampledata <- mydata[, c("d.time", "death","income","sex","age", "logage", "sod","resp") ]
+```
+
+
+```{r}
+summary(sampledata)
+```
+
+
+
+### Proportion of the SUPPORT Dataset Included in the Analysis
+
+```{r}
+prop_use_support <- (nrow(sampledata)/nrow(support2))*100
+prop_use_support
+```
+
+  
+
+## Realistic Data Simulation
+
+
+
+
+
+```{r}
+set.seed(123)  # pour la reproductibilité
+
+# Liste de 1000 jeux de données simulés
+nsim =1000
+sampledata <- lapply(1:nsim, function(i) {
+  sampledata[sample(1:nrow(sampledata), size = 1000, replace = FALSE), ]
 })
-
 ```
 
-# Fonction pour générer les valeurs manquantes sous MAR
+
+
+
+
+
+### Generation of Missing Data Under MAR
+
+The predictive variables for the missingness mechanism in the real dataset are: `age`, `sod`, and `death`.
+
 
 ```{r}
-simulate_mar <- function(data,  alpha, mar_var) {
-  prob_R <- plogis(model.matrix(~ time + delta +  X2 + X3, data)[, -1] %*% alpha) 
-  data$R <- as.factor(rbinom(nrow(data), 1, prob_R)) # Variable indicatrice des données manquantes
-  data[[paste0(mar_var, ".mis")]] <- as.factor(ifelse(data$R == 1, data[[mar_var]], NA))
-  return(data)
+simulate_mar <- function(data, mar_var = "income", prop = 0.3, seed = 123) {
+  set.seed(seed)
+  
+  # 1. Vérification et sauvegarde des niveaux
+  if (!is.factor(data[[mar_var]])) stop("La variable cible doit être un facteur.")
+  target_levels <- levels(data[[mar_var]])
+  
+  # 2. Variables explicatives 
+  vars <- c( mar_var, "death",   "age",  "sod")
+  
+  # 3. Transformation en dummies (sans intercept)
+  X <- model.matrix(~ ., data = data[, vars])[, -1]
+  X <- as.data.frame(X)
+  
+  # 4. Identifier les colonnes dummies associées à la variable cible
+  target_cols_idx <- grep(paste0("^", mar_var), names(X))
+  if (length(target_cols_idx) == 0) stop("Aucune variable dummy trouvée pour ", mar_var)
+  
+  # 5. Construire le pattern MAR : 0 = à amputer, 1 = à garder
+  pattern <- matrix(1, nrow = 1, ncol = ncol(X))
+  pattern[1, target_cols_idx] <- 0
+  colnames(pattern) <- colnames(X)
+  
+  # 6. Construire les poids pour MAR
+  weights <- matrix(0, nrow = 1, ncol = ncol(X))
+  other_cols_idx <- setdiff(seq_len(ncol(X)), target_cols_idx)
+  weights[1, other_cols_idx] <- runif(length(other_cols_idx))
+  colnames(weights) <- colnames(X)
+  
+  # 7. Appliquer amputation
+  amp <- mice::ampute(
+    data = X,
+    prop = prop,
+    patterns = pattern,
+    freq = 1,
+    weights = weights,
+    mech = "MAR"
+  )
+  
+  # 8. Reconstruire la variable cible
+  target_cols_names <- names(X)[target_cols_idx]
+  recovered <- apply(amp$amp[, target_cols_names], 1, function(row) {
+    if (all(is.na(row))) return(NA)
+    ref <- target_levels[1]
+    idx <- which(row == 1)
+    if (length(idx) == 0) return(ref)
+    return(target_levels[idx + 1])
+  })
+  
+  # 9. Indicateur de complétude
+  R <- ifelse(is.na(recovered), 0, 1)
+  
+  # 10. Mettre à jour le jeu de données
+  new_data <- data
+  new_data[[paste0(mar_var, ".mis")]] <- factor(recovered, levels = target_levels)
+  new_data[["R"]] <- R
+  
+  return(new_data)
 }
-```
 
-
-## Paramètres  de la fonction de simulation des données manquantes
-
-```{r}
-set.seed(450)
-
-alpha = c(-1,2.5,1,1) # Scénario 1
-#alpha = c(-0.5,1.5,0.5,1) # Scénario 2
-#alpha = c(0.5,-0.5,0.5,2) # Scénario 3 # Non présenter dans le papier
-#alpha = c(-1,1,-0.5,1.5) # Scénario 4 # Non présenter dans le papier
 ```
 
 
 
-# Mise à jour des données simulées
 
 ```{r}
-datas <- lapply(datas, function(data) {
-  data <- simulate_mar(data = data,  alpha = alpha, mar_var = "X1")
+sampledata <- lapply(sampledata, function(data) {
+  data <- simulate_mar(data = data)
   return(data)
 })
-
 ```
 
-# Fonction pour proportions moyennes des observations censurées et manquantes.
 
+#### Fonction pour proportions moyennes des observations censurées et manquantes.
 
 ```{r}
 prop <- function(data, nsim, variable) {
@@ -137,53 +536,69 @@ prop <- function(data, nsim, variable) {
   }
   return(mat)
 }
-
 ```
 
-
-## Proportion moyenne des observations censurées
-
+#### Average Proportion of Censored Observations
 
 ```{r}
-prop_delta <- colMeans(prop(datas, nsim,"delta"))*100
+prop_delta <- colMeans(prop(sampledata, nsim,"death"))*100
 prop_delta
 ```
 
+#### Average Proportion of Missing Observations
 
-## Proportion moyenne des observations manquantes
 
 ```{r}
-prop_NA <- colMeans(prop(datas, nsim,"R"))*100
+prop_NA <- colMeans(prop(sampledata, nsim,"R"))*100
 prop_NA
 ```
 
 
 
-# Fonction pour ajouter le Nelson-Aalen cumulative hazard
+
+## Function to Add the Nelson-Aalen Cumulative Hazard
 
 ```{r}
-addcumhaz <- function(data) {
-  if (!all(c("time", "delta") %in% colnames(data))) {
-    stop("Les colonnes 'time' et 'delta' doivent être présentes dans les données.")
+addcumhaz <- function(data, time_var = "time", event_var = "delta") {
+  # Vérification de la présence des colonnes spécifiées
+  if (!all(c(time_var, event_var) %in% colnames(data))) {
+    stop("Les colonnes spécifiées doivent être présentes dans les données.")
   }
-  fit <-  survival::survfit(survival::Surv(time, delta == 1) ~ 1, data = data, type = "fh")
+  
+  # Construction dynamique de l'objet Surv
+  surv_obj <- survival::Surv(time = data[[time_var]], event = data[[event_var]] == 1)
+  
+  # Ajustement du modèle de survie
+  fit <- survival::survfit(surv_obj ~ 1, data = data, type = "fh")
+  
+  # Initialisation de la variable cumhaz à NA
   data$cumhaz <- NA
-  time_indices <- match(data$time, fit$time)
+  
+  # Appariement des temps
+  time_values <- data[[time_var]]
+  time_indices <- match(time_values, fit$time)
+  
+  # Remplissage de cumhaz
   data$cumhaz[!is.na(time_indices)] <- fit$cumhaz[time_indices[!is.na(time_indices)]]
   
   return(data)
 }
+
 ```
 
-## Mise à jour des données simulées
 
 ```{r}
-datas <- lapply(datas, addcumhaz)
-
+sampledata <- lapply(sampledata, function(df) addcumhaz(df, time_var = "d.time", event_var = "death"))
 ```
 
 
-## Fonctions pour charger des packages dans un calcul en parallèle
+
+
+## Full Data (Without Missing Values): Estimation of Beta Parameters
+
+We implicitly assume that the final analysis model is correctly specified and that the variability due to simulation is negligible compared to the impact of the imputation methods.
+ 
+
 
 ```{r}
 PACKAGE <- function(package){
@@ -193,9 +608,50 @@ PACKAGE <- function(package){
 }
 ```
 
+```{r}
+cl <- makeCluster(detectCores() - 1)
+clusterExport(cl, c("sampledata"))
+invisible(clusterCall(cl, PACKAGE, c("survival")))
+
+Full.mod <- parLapply(cl, sampledata, function(data) {
+  coxph(
+formula = Surv(d.time, death == 1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t},data = data)})
+
+stopCluster(cl)
+```
 
 
-# Fonction pour le calcul de la variance et de la couverture des intervalles
+```{r}
+cl <- makeCluster(detectCores() - 1)
+clusterExport(cl, c("Full.mod"))
+Full.est <- parLapply(cl, Full.mod, function(model) {
+  summ <- summary(model)
+  coef <- summ$coefficients[, "coef"]
+  se <- summ$coefficients[, "se(coef)"]
+  est_df <- data.frame(
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se,
+    CI_up = coef + qnorm(0.975) * se
+  )
+  return(est_df)
+})
+stopCluster(cl)
+```
+
+
+
+
+```{r}
+estimate_list <- lapply(Full.est, function(df) df$Estimate)
+estimate_matrix <- do.call(rbind, estimate_list)
+beta <- colMeans(estimate_matrix)
+beta
+```
+
+## Utility Functions for the Simulation Study
+
+
+
 
 ```{r}
 fun_var <- function(esti_ech, esti_mean){
@@ -207,9 +663,6 @@ fun_coverage <- function(value, CI.low, CI.upper){
 }
 ```
 
-
-
-## Fonction  utile dans le cadre d'une simulation
 
 ```{r}
 full_mcar_mar <- function(True, hat_estimate, nsim){
@@ -235,52 +688,28 @@ full_mcar_mar <- function(True, hat_estimate, nsim){
 
 ```
 
+## Completes cases anlysis: (MCAR)
 
-## Full data (Données simulées sans valeurs manquantes)
+
+
 
 
 ```{r}
-cl <- makeCluster(detectCores())
-clusterExport(cl, c("datas"))
+cl <- makeCluster(detectCores() - 1)
+clusterExport(cl, c("sampledata"))
 invisible(clusterCall(cl, PACKAGE, c("survival")))
-
-Full.mod <- parLapply(cl, datas, function(data) {
-  coxph(Surv(time, delta=="1") ~ X1 + X2 +X3, data = data)
+MCAR.mod <- parLapply(cl, sampledata, function(data) {
+  coxph(
+  formula = Surv(d.time, death == 1) ~ income.mis +  resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t},data = data)
 })
-
-Full.est <- parLapply(cl, Full.mod, function(model) {
-  summ <- summary(model)
-  coef <- summ$coefficients[, "coef"]
-  se <- summ$coefficients[, "se(coef)"]
-  est_df <- data.frame(
-    Estimate = coef,
-    CI_low = coef - qnorm(0.975) * se,
-    CI_up = coef + qnorm(0.975) * se
-  )
-  return(est_df)
-})
-stopCluster(cl)
+stopCluster(cl) 
 
 ```
 
 
 ```{r}
-estisimule <- full_mcar_mar(True = beta, nsim =nsim,  hat_estimate = Full.est)
-round(estisimule,3)
-```
-
-
-
-## completes cases analysis (MCAR)
-
-```{r}
-cl <- makeCluster(detectCores())
-clusterExport(cl, c("datas"))
-invisible(clusterCall(cl, PACKAGE, c("survival")))
-MCAR.mod <- parLapply(cl, datas, function(data) {
-  coxph(Surv(time, delta=="1") ~ X1.mis + X2 + X3,na.action = na.omit, data = data)
-})
-
+cl <- makeCluster(detectCores() - 1)
+clusterExport(cl, c("MCAR.mod"))
 MCAR.est <- parLapply(cl, MCAR.mod, function(model) {
   summ <- summary(model)
   coef <- summ$coefficients[, "coef"]
@@ -299,33 +728,114 @@ stopCluster(cl)
 
 ```{r}
 estimcar <- full_mcar_mar(True = beta,nsim =nsim, hat_estimate = MCAR.est)
-row.names(estimcar) <- rownames(estisimule)
-round(estimcar,3)
+estimcar
 ```
 
 
 
+## Semi-parametric Approach: Inverse Probability Weighting (MAR)
 
-## Imputation paramétrique avec le package mice (MAR)
+### Trade-off Parameter
+
 
 ```{r}
-M = 20 # Nombre d'imputations
+# kappa = 1 
+# kappa = 0.95 pas encore
+# kappa = 0.9 pas encore
+# kappa = 0.8 pas encore
+# kappa = 0.7 pas encore
+# kappa = 0.5 
+ kappa = 0.4
+# kappa = 0.3 
+# kappa = 0.2
+# kappa = 0 
+```
+
+
+```{r}
+set.seed(312)
+sampledata <- lapply(1:nsim, function(s) {
+  work.model <- glm(R ~  death + age  +sod, data = sampledata[[s]], family = binomial)
+  predicted <-  pmax(pmin(predict(work.model, type = "response"), 0.99), 0.01)
+  sampledata[[s]]$w <- ifelse(
+    sampledata[[s]]$R == 1,
+    1 / predicted, 
+    kappa*1 + (1-kappa)*(1 / (1-predicted))
+  )
+  
+  return(sampledata[[s]])
+})
+
+```
+
+
+```{r}
+cl <- makeCluster(detectCores() - 1)
+clusterExport(cl, c("sampledata"))
+invisible(clusterCall(cl, function() library(survival)))
+
+iwp.mod <- parLapply(cl, sampledata, function(data) {
+  coxph(
+  formula = Surv(d.time, death == 1) ~ income.mis +  resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}, weights = w, data = data, robust = TRUE)
+})
+stopCluster(cl)
+
+```
+
+
+```{r}
+cl <- makeCluster(detectCores() - 1)
+clusterExport(cl, c("iwp.mod"))
+iwp.est <- parLapply(cl, iwp.mod, function(model) {
+  summ <- summary(model)
+  coef <- summ$coefficients[, "coef"]
+  se <- summ$coefficients[, "robust se"]
+  est_df <- data.frame(
+    Estimate = coef,
+    CI_low = coef - qnorm(0.975) * se,
+    CI_up = coef + qnorm(0.975) * se
+  )
+  return(est_df)
+})
+
+stopCluster(cl)
+```
+
+
+```{r}
+estimar_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = iwp.est)
+estimar_iwp
+```
+
+
+## Parametric Multiple Imputation (MAR)
+
+## Parametric Imputation with the `mice` Package (MAR)
+
+### Number of Imputations
+
+
+```{r}
+M = 10
+```
+
+
+```{r}
 
 cl <- makeCluster(detectCores())
-clusterExport(cl, c("datas", "M")) 
+clusterExport(cl, c("sampledata", "M")) 
 invisible(clusterCall(cl, PACKAGE, c("mice")))
 mice_P_data <- parLapply(cl, 1:nsim, function(s) {
   mice(
-    data= datas[[s]][,c("cumhaz", "delta", "X1.mis","X2","X3")],  
+    data= sampledata[[s]][,c("cumhaz", "death" ,"income.mis","sex", "age",  "logage","resp",  "sod" )],  
     m = M,         
     maxit = 10,      
-    method = c("norm","logreg", "polyreg","logreg","norm"),
+    method = c("norm","logreg", "polyreg","logreg", "norm", "norm","norm", "norm"),
     print = FALSE,
     seed = 10000
   )
 })
 
-stopCluster(cl)
 ```
 
 
@@ -334,7 +844,7 @@ stopCluster(cl)
 mice_P_data <- lapply(1:nsim, function(s) {
   # Créer une liste de jeux de données combinés pour chaque imputation
   combined_data <- lapply(1:M, function(m) {
-    cbind("time"= datas[[s]]$time, mice::complete(mice_P_data[[s]], m))
+    cbind("d.time"= sampledata[[s]]$d.time, mice::complete(mice_P_data[[s]], m))
   })
   
   # Convertir la liste de données en un objet mids
@@ -344,12 +854,6 @@ mice_P_data <- lapply(1:nsim, function(s) {
 })
 
 ```
-
-
-
-
-
-
 
 ```{r}
 combine_MI <- function(manyresult) {
@@ -413,7 +917,8 @@ combine_MI <- function(manyresult) {
 
 ```{r}
 compute_mar <- function(data){
-  mar.model <- with(data, coxph(Surv(time, delta =="1") ~ X1.mis + X2 +X3 ))
+  mar.model <- with(data, coxph(
+  formula = Surv(d.time, death == 1) ~ income.mis +  resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}))
   mar.est <- combine_MI(mar.model)
   colnames(mar.est) <- c("Estimate",  "CI_low", "CI_up")
   return(mar.est)
@@ -437,92 +942,23 @@ stopCluster(cl)
 
 ```{r}
 estimar_P_mice <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_mice.est)
-row.names(estimar_P_mice) <- rownames(estisimule)
-round(estimar_P_mice,3)
+estimar_P_mice
 ```
 
-
-## Approche semi-paramétrique: inverse de la probabilité pondérée (MAR)
-
-### Paramètre de compromis
-
-```{r}
- kappa = 1 
-# kappa = 0.95
-# kappa = 0.9
-# kappa = 0.8
-# kappa = 0.7
-# kappa = 0.5
-# kappa = 0.3
-# kappa = 0
-```
-
-
-```{r}
-set.seed(312)
-datas <- lapply(1:nsim, function(s) {
-  work.model <- glm(R ~ time + delta + X2 + X3, data = datas[[s]], family = binomial)
-  predicted <-  pmax(pmin(predict(work.model, type = "response"), 0.99), 0.01)
-  datas[[s]]$w <- ifelse(
-    datas[[s]]$R == 1,
-    1 / predicted, 
-    kappa*1 + (1-kappa)*(1 / (1-predicted))
-  )
-  
-  return(datas[[s]])
-})
-```
-
-
-```{r}
-cl <- makeCluster(detectCores())
-clusterExport(cl, c("datas"))
-invisible(clusterCall(cl, function() library(survival)))
-
-iwp.mod <- parLapply(cl, datas, function(data) {
-  coxph(Surv(time, delta == "1") ~ X1.mis + X2 + X3, weights = w, data = data, robust = TRUE)
-})
-
-iwp.est <- parLapply(cl, iwp.mod, function(model) {
-  summ <- summary(model)
-  coef <- summ$coefficients[, "coef"]
-  se <- summ$coefficients[, "robust se"]
-  est_df <- data.frame(
-    Estimate = coef,
-    CI_low = coef - qnorm(0.975) * se,
-    CI_up = coef + qnorm(0.975) * se
-  )
-  return(est_df)
-})
-
-stopCluster(cl)
-```
-
-
-
-```{r}
-estimar_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = iwp.est)
-row.names(estimar_iwp) <- rownames(estisimule)
-round(estimar_iwp,3)
-```
-
-
-
-
-## Imputatation non paramétrique : Random forest (MAR)
+## Nonparametric Imputation: Random Forest (MAR)
 
 
 
 ```{r}
 cl <- makeCluster(detectCores())
-clusterExport(cl, c("datas", "M")) 
+clusterExport(cl, c("sampledata", "M")) 
 invisible(clusterCall(cl, PACKAGE, c("mice","ranger")))
 mice.rf.data <- parLapply(cl, 1:nsim, function(s) {
   mice(
-    data= datas[[s]][,c("time", "delta", "X1.mis","X2","X3")],  
+    data= sampledata[[s]][,c("cumhaz", "death" ,"income.mis","sex", "age",  "logage","resp",  "sod" )],  
     m = M,         
     maxit = 10,      
-    method = c("rf","rf", "rf","rf","rf"), 
+    method = c("rf","rf", "rf","rf","rf","rf","rf", "rf"), 
     print = FALSE,
     seed = 10000
   )
@@ -536,7 +972,7 @@ stopCluster(cl)
 mice.rf.data <- lapply(1:nsim, function(s) {
   # Créer une liste de jeux de données combinés pour chaque imputation
   combined_data <- lapply(1:M, function(m) {
-    cbind("time"= datas[[s]]$time, mice::complete(mice.rf.data[[s]], m))
+    cbind("d.time"= sampledata[[s]]$d.time, mice::complete(mice.rf.data[[s]], m))
   })
   
   # Convertir la liste de données en un objet mids
@@ -559,20 +995,17 @@ stopCluster(cl)
 
 ```
 
-
-
-
 ```{r}
 estimar_mice_RF_NP <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_mice.rf.est)
-row.names(estimar_mice_RF_NP) <- rownames(estisimule)
-round(estimar_mice_RF_NP,3)
+
+estimar_mice_RF_NP
 ```
 
 
+# Hybrid Methods
 
-# Méthodes hybrides 
+## Hybrid 1: Parametric MI and Nonparametric MI (MAR)
 
-## Hybride 1:  MI paramétrique  et  MI non paramétrique (MAR)
 
 
 ```{r}
@@ -604,14 +1037,15 @@ stopCluster(cl)
 
 ```{r}
 estimar_mice_P_NP <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_P_NP.est)
-row.names(estimar_mice_P_NP ) <- rownames(estisimule)
-round(estimar_mice_P_NP,3)
+estimar_mice_P_NP
 ```
 
 
 
 
-## Hybride 2: MI paramétrique et IWP (MAR)
+
+## Hybrid 2: Parametric MI and IPW (MAR)
+
 
 
 
@@ -619,7 +1053,7 @@ round(estimar_mice_P_NP,3)
 MI.P_IWP_data <- lapply(1:nsim, function(s) {
   imputation <- lapply(1:M, function(m) {
     cbind(mice_P_data[[s]][[m]],
-          datas[[s]][, c("R", "w")]
+          sampledata[[s]][, c("R", "w")]
     )
   })
 })
@@ -638,8 +1072,7 @@ compute_MI_IWP <- function(data_list) {
   # Parcourir chaque jeu d'imputation
   for (i in seq_along(data_list)) {
     # Ajuster le modèle de Cox pour chaque jeu de données imputé
-    fit <- coxph(Surv(time, delta == "1") ~ X1.mis + X2 + X3, 
-                 data = data_list[[i]], weights = data_list[[i]]$w,robust = TRUE)
+    fit <- coxph(Surv(d.time, death == "1") ~ income.mis +  resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}, data = data_list[[i]], weights = data_list[[i]]$w,robust = TRUE)
     
     # Stocker les estimations
     estimates[[i]] <- coef(fit)  # Coefficients estimés
@@ -661,12 +1094,12 @@ compute_MI_IWP <- function(data_list) {
   B <- apply(estimates_mat, 2, var)*(m / (m - 1))  # Variance inter-imputation
   T <- U_bar + (1 + 1/m) * B  # Variance totale combinée
   
-    # df: degrés de liberté de Rubin
-   df <- (m - 1)*(1 + U_bar/B)^2
-
+  # df: degrés de liberté de Rubin
+  df <- (m - 1)*(1 + U_bar/B)^2
+  
   # Calcul des erreurs standards et des IC combinés
-   CI_low_combined <- Q_bar - qt(0.975, df = df) * sqrt(T)
-   CI_up_combined <- Q_bar + qt(0.975, df = df) * sqrt(T)
+  CI_low_combined <- Q_bar - qt(0.975, df = df) * sqrt(T)
+  CI_up_combined <- Q_bar + qt(0.975, df = df) * sqrt(T)
   
   # Résultat final sous forme de data.frame
   mar.est <- data.frame(
@@ -697,13 +1130,19 @@ stopCluster(cl)
 
 ```{r}
 estimar_mice_P_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_miceP_iwp.est)
-row.names(estimar_mice_P_iwp) <- rownames(estisimule)
-round(estimar_mice_P_iwp,3)
+estimar_mice_P_iwp
 ```
 
 
 
-## Hybride 3: MI non paramétrique et IWP (MAR)
+
+
+
+
+
+
+## Hybrid 3: Nonparametric MI and IPW (MAR)
+
 
 
 
@@ -711,7 +1150,7 @@ round(estimar_mice_P_iwp,3)
 MI.NP_IWP_data <- lapply(1:nsim, function(s) {
   lapply(1:M, function(m) {
     cbind(mice.rf.data[[s]][[m]],
-          datas[[s]][, c("R", "w")]
+          sampledata[[s]][, c("R", "w")]
     )
   })
 })
@@ -735,20 +1174,22 @@ stopCluster(cl)
 
 ```{r}
 estimar_mice_NP_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_miceNP_iwp.est)
-row.names(estimar_mice_NP_iwp) <- rownames(estisimule)
-round(estimar_mice_NP_iwp,3)
+estimar_mice_NP_iwp
 
 ```
 
 
-## Hybride 4: MI paramétrique, MI non paramétrique et IWP (MAR)
+
+
+## Hybrid 4: Parametric MI, Nonparametric MI, and IPW (MAR)
+
 
 
 ```{r}
 P_NP_IWP_data <- lapply(1:nsim, function(s){
   lapply(1:M, function(m){
     cbind(P_NP_data[[s]][[m]],
-          datas[[s]][, c("R", "w")])
+          sampledata[[s]][, c("R", "w")])
   })
 })
 
@@ -773,32 +1214,35 @@ stopCluster(cl)
 
 ```{r}
 estimar_mice_P_NP_iwp <- full_mcar_mar(True = beta,nsim = nsim, hat_estimate = tout_mice_P_NP_iwp.est)
-row.names(estimar_mice_P_NP_iwp) <- rownames(estisimule)
-round(estimar_mice_P_NP_iwp,3)
+estimar_mice_P_NP_iwp
 ```
 
 
 
 
-
-# Résultats
+# Results
 
 
 ```{r}
 bias_relative <- function(value,hat_estimate){
   return(((hat_estimate - value)/value)*100)
 }
+
+
+biais_absolu <- function(value, hat_estimate) {
+  return(abs(hat_estimate - value))
+}
+
 ```
 
 
 
 
-## Les estimés
+## The Estimates
 
 
 ```{r}
 all_estimate <- data.frame(True = beta,
-                           Full = estisimule[,"Estimate"],
                            CC = estimcar[,"Estimate"],
                            Iwp = estimar_iwp[,"Estimate"],
                            Mice.P = estimar_P_mice[,"Estimate"],
@@ -807,21 +1251,37 @@ all_estimate <- data.frame(True = beta,
                            Hybrid2 = estimar_mice_P_iwp[,"Estimate"],
                            Hybrid3 = estimar_mice_NP_iwp[,"Estimate"],
                            Hybrid4 = estimar_mice_P_NP_iwp[,"Estimate"])
-rownames(all_estimate) <- rownames(estisimule)
-knitr::kable(round(all_estimate, 3))
+rownames(all_estimate) <- rownames(Full.est[[1]])
+
+knitr::kable(round(all_estimate, 4))
 ```
 
 
 
 
-
-
-## Biais relatif en pourcentage
-
+## Absolute Bias
 
 ```{r}
-all_bias <- data.frame(Full = bias_relative(value = beta,hat_estimate = estisimule[,"Estimate"]),
-                       CC = bias_relative(value = beta,hat_estimate = estimcar[,"Estimate"]),
+ab_biais <- data.frame( CC = biais_absolu(value = beta,hat_estimate = estimcar[,"Estimate"]),
+                        Iwp = biais_absolu(value = beta,hat_estimate = estimar_iwp[,"Estimate"]),
+                        Mice.P = biais_absolu(value = beta,hat_estimate = estimar_P_mice[,"Estimate"]),
+                        RF.NP = biais_absolu(value = beta,hat_estimate = estimar_mice_RF_NP[,"Estimate"]),
+                        Hybrid1 = biais_absolu(value = beta,hat_estimate = estimar_mice_P_NP[,"Estimate"]),
+                        Hybrid2 = biais_absolu(value = beta,hat_estimate = estimar_mice_P_iwp[,"Estimate"]),
+                        Hybrid3 = biais_absolu(value = beta,hat_estimate = estimar_mice_NP_iwp[,"Estimate"]),
+                        Hybrid4 = biais_absolu(value = beta,hat_estimate = estimar_mice_P_NP_iwp[,"Estimate"]))
+
+
+rownames(ab_biais) <- rownames(Full.est[[1]])
+knitr::kable(round(ab_biais,5))
+```
+
+
+
+## Relative Bias (in Percentage)
+
+```{r}
+all_bias <- data.frame( CC = bias_relative(value = beta,hat_estimate = estimcar[,"Estimate"]),
                        Iwp = bias_relative(value = beta,hat_estimate = estimar_iwp[,"Estimate"]),
                        Mice.P = bias_relative(value = beta,hat_estimate = estimar_P_mice[,"Estimate"]),
                        RF.NP = bias_relative(value = beta,hat_estimate = estimar_mice_RF_NP[,"Estimate"]),
@@ -829,9 +1289,9 @@ all_bias <- data.frame(Full = bias_relative(value = beta,hat_estimate = estisimu
                        Hybrid2 = bias_relative(value = beta,hat_estimate = estimar_mice_P_iwp[,"Estimate"]),
                        Hybrid3 = bias_relative(value = beta,hat_estimate = estimar_mice_NP_iwp[,"Estimate"]),
                        Hybrid4 = bias_relative(value = beta,hat_estimate = estimar_mice_P_NP_iwp[,"Estimate"]))
-rownames(all_bias) <- rownames(estisimule)
 
 
+rownames(all_bias) <- rownames(Full.est[[1]])
 knitr::kable(round(all_bias,3))
 ```
 
@@ -842,7 +1302,7 @@ knitr::kable(round(all_bias,3))
 ## standard deviation
 
 ```{r}
-all_sd <- data.frame(Full = estisimule[,"Emp_sd"],
+all_sd <- data.frame(
                      CC = estimcar[,"Emp_sd"],
                      Iwp = estimar_iwp[,"Emp_sd"],
                      Mice.P = estimar_P_mice[,"Emp_sd"],
@@ -851,8 +1311,9 @@ all_sd <- data.frame(Full = estisimule[,"Emp_sd"],
                      Hybrid2 = estimar_mice_P_iwp[,"Emp_sd"],
                      Hybrid3 = estimar_mice_NP_iwp[,"Emp_sd"],
                      Hybrid4 = estimar_mice_P_NP_iwp[,"Emp_sd"])
-rownames(all_sd) <- rownames(estisimule)
 
+
+rownames(all_sd) <- rownames(Full.est[[1]])
 knitr::kable(round(all_sd,3))
 ```
 
@@ -862,7 +1323,7 @@ knitr::kable(round(all_sd,3))
 ## Coverage
 
 ```{r}
-all_coverage <- data.frame(Full = estisimule[,"Cover"],
+all_coverage <- data.frame(
                            CC = estimcar[,"Cover"],
                            Iwp = estimar_iwp[,"Cover"],
                            Mice.P = estimar_P_mice[,"Cover"],
@@ -872,18 +1333,18 @@ all_coverage <- data.frame(Full = estisimule[,"Cover"],
                            Hybrid3 = estimar_mice_NP_iwp[,"Cover"],
                            Hybrid4 = estimar_mice_P_NP_iwp[,"Cover"])
 
-rownames(all_coverage) <- rownames(estisimule)
 
-knitr::kable(all_coverage)
+rownames(all_coverage) <- rownames(Full.est[[1]])
+knitr::kable(round(all_coverage*100,5))
 ```
 
 
 
 
-## Largeurs des intervalles de confiance
+## Confidence Interval Widths
 
 ```{r}
-all_CI_width <- data.frame(Full = estisimule[,"CI_width"],
+all_CI_width <- data.frame(
                            CC = estimcar[,"CI_width"],
                            Iwp = estimar_iwp[,"CI_width"],
                            Mice.P = estimar_P_mice[,"CI_width"],
@@ -893,91 +1354,21 @@ all_CI_width <- data.frame(Full = estisimule[,"CI_width"],
                            Hybrid3= estimar_mice_NP_iwp[,"CI_width"],
                            Hybrid4 = estimar_mice_P_NP_iwp[,"CI_width"])
 
-rownames(all_CI_width) <- rownames(estisimule)
 
+
+rownames(all_CI_width) <- rownames(Full.est[[1]])
 knitr::kable(round(all_CI_width,3))
 ```
 
-## Réprésentation graphique
-
 
 ```{r}
-biais_ci_coverage <- function(bias_data, ci_data, coverage_data) {
-  # 1. Mise en forme des données
-  method_order <- colnames(bias_data) # Capturer l'ordre des colonnes
-  
-  bias <- as.data.frame(bias_data) %>%
-    dplyr::mutate(Variable = rownames(bias_data)) %>%
-    tidyr::pivot_longer(-Variable, names_to = "Method", values_to = "Bias (%)")
-  
-  ci <- as.data.frame(ci_data) %>%
-    dplyr::mutate(Variable = rownames(ci_data)) %>%
-    tidyr::pivot_longer(-Variable, names_to = "Method", values_to = "CI Width (95%)")
-  
-  coverage <- as.data.frame(coverage_data) %>%
-    dplyr::mutate(Variable = rownames(coverage_data)) %>%
-    tidyr::pivot_longer(-Variable, names_to = "Method", values_to = "Coverage (%)")
-  
-  # 2. Fusionner les données pour un affichage cohérent
-  all_data <- bias %>%
-    dplyr::left_join(ci, by = c("Variable", "Method")) %>%
-    dplyr::left_join(coverage, by = c("Variable", "Method")) %>%
-    tidyr::pivot_longer(cols = c("Bias (%)", "CI Width (95%)", "Coverage (%)"),
-                        names_to = "Metric", values_to = "Value")
-  
-  # 3. Forcer l'ordre des méthodes
-  all_data <- all_data %>%
-    dplyr::mutate(Method = factor(Method, levels = method_order)) # Ordre explicite des facteurs
-  
-  # 4. Générer le graphique
-  plot <- ggplot2::ggplot(all_data, ggplot2::aes(x = Method, y = Value, fill = Method)) +
-    ggplot2::geom_bar(stat = "identity", position = ggplot2::position_dodge(width = 2)) +
-    ggplot2::facet_grid(Metric ~ Variable, scales = "free_y") +
-    ggplot2::theme_bw(base_size = 8) +
-    ggplot2::labs(
-      title = "Relative Bias (%), CI Width (95%), and Coverage (%) --- (Scenario 1)",
-      x = "",
-      y = "Values"
-    ) +
-    ggplot2::theme(
-      legend.position = "right",
-      plot.title = ggplot2::element_text(hjust = 0.5),
-      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)
-    )
-  
-  return(plot)
-}
-```
 
-
-
-```{r}
-bias_data <- all_bias
-colnames(bias_data) <- c("FULL", "CC", "IWP", "MICE.P", "RF.NP", "HYBRID1", "HYBRID2","HYBRID3" ,  "HYBRID4")
-rownames(bias_data) <- c("beta12", "beta13", "beta21", "beta3")
-
-ci_data <- all_CI_width
-colnames(ci_data) <- colnames(bias_data)
-rownames(ci_data) <- rownames(bias_data)
-
-coverage_data <- all_coverage
-colnames(coverage_data) <- colnames(bias_data)
-rownames(coverage_data) <- rownames(bias_data)
-
-```
-
-```{r}
-biais_ci_coverage(bias_data, ci_data, coverage_data)
-```
-
-
-```{r}
 tf <- Sys.time()
-code_time = tf - ti
+code_time <- tf - ti
 code_time
-```
+
 
 
 # sink()
-
+```
 
