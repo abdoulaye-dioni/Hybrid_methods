@@ -11,14 +11,6 @@ output:
 ---
 
 ```{r}
-
-############ Application: SUPPORT data ####################
-
-# sink("application:support:data.txt")
-
-#  Données pour application : `support2` du package `Hmisc`  
-
-
 ti <- Sys.time()
 
 
@@ -27,84 +19,108 @@ library(survival)
 library(ggplot2)
 library(survminer)
 library(ggthemes)
-library(splines)
 library(mice)
 library(mitml)
 library(tableone)
-
-
-getHdata(support)
-getHdata(support2)
-
+library(splines)
 ```
 
 
-## Néttoyage des données
+
+## Loading the data
 
 ```{r}
+getHdata(support)
+getHdata(support2)
 support.name <- names(support)
 support.name
+```
+
+Restricted variable selection according to the recommendations at https://hbiostat.org/data/repo/supportdesc
+
+```{r}
+support2_data <- support2[, support.name] 
+dim(support2_data)
+```
 
 
 
 
-
-
-
-support2_data <- as.data.frame(lapply(support2, function(col) {
+```{r}
+support2_data <- as.data.frame(lapply(support2_data, function(col) {
   if (inherits(col, "labelled")) {
     return(as.vector(col))
   } else {
     return(col)
   }
 }))
+
 ```
-
-
 
 
 ```{r}
-mydata <- support2_data[,c("d.time","death","age","sex", "income","edu", "dzgroup","num.co","meanbp","hrt", "crea", "sod","resp","temp", "wblc", "race")]
+dim(support2_data)
+names(support2_data)
+```
 
 
-mydata$meanbp <- ifelse(mydata$meanbp == 0, NA, mydata$meanbp)
-mydata$resp <- ifelse(mydata$resp == 0, NA, mydata$resp)
-mydata$hrt <- ifelse(mydata$hrt == 0 | mydata$hrt == 300, NA, mydata$hrt)
-mydata$wblc <- ifelse(mydata$wblc == 0 | mydata$wblc == 200, NA, mydata$wblc)
-#mydata$age <- cut(mydata$age,breaks=c(-Inf,54,64,74,84, +Inf),labels = paste0("",1:5))
+```{r}
+summary(support2_data)
+```
+
+As part of the illustration of the application of hybrid approaches, the analysis is restricted to a subset of clinically relevant variables measured at admission.
+
+
+```{r}
+support2_data <- support2_data[, c("d.time","death","age","sex","income","sod", "resp")]
 
 ```
+
+```{r}
+summary(support2_data)
+```
+
+
+## Notoyage des données
+```{r}
+support2_data$income <- as.character(support2_data$income)
+support2_data$income[support2_data$income %in% c("$25-$50k", ">$50k")] <- ">$25k"
+support2_data$income <- factor(support2_data$income,
+                            levels = c("under $11k", "$11-$25k" ,   ">$25k"),
+                            labels = c("<11k", "11–25k", ">25k")
+)
+```
+
+
+```{r}
+support2_data$resp <- ifelse(support2_data$resp == 0, NA, support2_data$resp)
+support2_data <- support2_data[!support2_data$resp %in% c(0), ]
+support2_data$death <- as.factor(support2_data$death)
+support2_data$d.time <- support2_data$d.time/(30.4375*3) 
+```
+
+```{r}
+support2_data$R.income <- as.factor(ifelse(is.na(support2_data$income),0,1))
+```
+
+
 
 ## Données d'études 
 
 
 ```{r}
-data_clean <- mydata[complete.cases(mydata[, setdiff(names(mydata), "income")]), ]
-
-
-data_clean$meanbp2 <- data_clean$meanbp^2
-data_clean$hrt2 <- data_clean$hrt^2
-data_clean$temp2 <- data_clean$temp^2
-data_clean$sqrt_crea <- sqrt(data_clean$crea)
+data_clean <- support2_data[complete.cases(support2_data[, setdiff(names(support2_data), "income")]), ]
 ```
 
 
 
-## Recodage de certaines variables
 
-```{r}
-data_clean$death <- as.factor(data_clean$death)
-#data_clean$id <- 1:nrow(data_clean)
-levels(data_clean$income) <- c("<$11k", "$11-$25k",  "$25-$50k" ,  ">$50k")
-data_clean$d.time <- data_clean$d.time/(30.4375*3) # Temps en trimestre
-#data_clean$d.time <- data_clean$d.time/365.25 # Temps en année
-data_clean$R.income <- as.factor(ifelse(is.na(data_clean$income),0,1))
 
-```
 
-## Analyse descriptive des données
+## Descriptive Analysis of the Data
 
-### Proportion des données de SUPPORT utilisées
+### Proportion of SUPPORT Data Used
+
 
 ```{r}
 prop_use_support <- (nrow(data_clean)/nrow(support2))*100
@@ -112,7 +128,8 @@ prop_use_support
 ```
 
 
-### Proportion des observations censurées et manquantes
+### Proportion of Censored and Missing Observations
+
 
 ```{r}
 (sum(data_clean$death ==0)/nrow(data_clean))*100 #  censure
@@ -120,10 +137,16 @@ prop_use_support
 (sum(is.na(data_clean$income))/nrow(data_clean))*100 # manquante
 ```
 
-###  Description des données par strate de `income` et `R.income`
+```{r}
+summary(data_clean)
+```
+
+
+### Description of the Data by `income` and `R.income` Strata
+
 
 ```{r}
-TableOne_death <- tableone::CreateTableOne(vars = setdiff(names(data_clean), c("R.income")),strata = "death",data = data_clean,includeNA = TRUE,test = FALSE)
+TableOne_death <- tableone::CreateTableOne(vars = setdiff(names(data_clean), c("R.income")),strata = "death",data = data_clean,includeNA = FALSE,test = FALSE)
 
 print(TableOne_death, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE, pDigits = 4)
 ```
@@ -132,7 +155,7 @@ print(TableOne_death, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE, pDig
 
 
 ```{r}
-TableOne_R.income <- tableone::CreateTableOne(vars = setdiff(names(data_clean), c("id", "income")),strata = "R.income",data = data_clean,includeNA = TRUE, test = FALSE)
+TableOne_R.income <- tableone::CreateTableOne(vars = setdiff(names(data_clean), c("id", "income", "R.income")),strata = "R.income",data = data_clean,includeNA = FALSE, test = FALSE)
 
 print(TableOne_R.income, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE, pDigits = 4)
 ```
@@ -195,11 +218,11 @@ gridExtra::grid.arrange(grobs = list( km_income_graph$plot, km_R.income_graph$pl
 ```
 
 
+* Pour `income, P = 0.62` Aucune différence significative détectée entre les groupes. * Pour `R, P < 0.0001` Si les données étaient MCAR , la survie ne devrait pas différer selon le statut de complétude. Nous supposon MAR (Hypothèse de départ)
 
 
+# Assessment of Linearity for Continuous Variables
 
-
-# Évaluation de la linéarité des variables continues
 
 ```{r}
 smoothSEcurve <- function(yy, xx) {
@@ -219,75 +242,160 @@ smoothSEcurve <- function(yy, xx) {
 ```{r}
 coxph_0 <- coxph(Surv(d.time, death==1) ~ 1, data = data_clean)
 r.martingale <- residuals(coxph_0, type="martingale")
+```
 
 
-plot(r.martingale~ data_clean$age,col ="gray",  pch = 19,xlab = "age", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs age")
+
+#### For `age`
+
+
+```{r}
+# Modèle linéaire simple
+age_linear <- coxph(Surv(d.time, death == 1) ~ age, data = data_clean)
+
+# Logarithme
+data_clean$logage <- as.vector(log(data_clean$age))
+data_clean$logage <- as.numeric(scale(data_clean$logage, center = TRUE, scale = FALSE))
+age_log <- coxph(Surv(d.time, death == 1) ~ logage, data = data_clean)
+
+# Terme quadratique
+data_clean$agecarre <- data_clean$age + data_clean$age^2
+fit2 <- coxph(Surv(d.time, death == 1) ~  agecarre, data = data_clean)
+
+# Racine carrée
+data_clean$agesqrt <- sqrt(data_clean$age)
+age_sqrt <- coxph(Surv(d.time, death == 1) ~ agesqrt, data = data_clean)
+
+# Inverse
+data_clean$ageinv <- 1 / data_clean$age
+age_inv <- coxph(Surv(d.time, death == 1) ~ ageinv, data = data_clean)
+
+# Spline naturelle (3 degrés de liberté)
+age_spline <- coxph(Surv(d.time, death == 1) ~ ns(age, df = 3), data = data_clean)
+
+# Comparaison des AIC
+AIC(age_linear, age_log, fit2, age_sqrt, age_inv, age_spline)
+```
+
+
+
+
+
+
+
+
+
+
+
+Among the various transformations considered for the variable *age* (linear, square root, inverse, spline), the logarithmic transformation yielded the lowest Akaike Information Criterion (AIC = 105052.7), while maintaining minimal complexity (1 degree of freedom). This result supports its use in subsequent analyses, especially since it aligns with the functional form employed in the simulation framework, where *age* also appeared in logarithmic form.
+
+
+
+
+
+
+
+### For `resp`
+
+
+```{r}
+# Modèle linéaire simple
+resp_linear <- coxph(Surv(d.time, death == 1) ~ resp, data = data_clean)
+
+# Logarithme
+resp_log <- coxph(Surv(d.time, death == 1) ~ log(resp), data = data_clean)
+
+# Terme quadratique
+data_clean$respcarre <- data_clean$resp + data_clean$resp^2
+fit2 <- coxph(Surv(d.time, death == 1) ~ respcarre, data = data_clean)
+
+# Racine carrée
+data_clean$respsqrt <- sqrt(data_clean$resp)
+resp_sqrt <- coxph(Surv(d.time, death == 1) ~ respsqrt, data = data_clean)
+
+# Inverse
+data_clean$respinv <- 1 / data_clean$resp
+resp_inv <- coxph(Surv(d.time, death == 1) ~ respinv, data = data_clean)
+
+# Spline naturelle (3 degrés de liberté)
+resp_spline <- coxph(Surv(d.time, death == 1) ~ ns(resp, df = 3), data = data_clean)
+
+# Comparaison des AIC
+AIC(resp_linear, resp_log, fit2, resp_sqrt, resp_inv, resp_spline)
+```
+
+
+
+
+
+
+
+### For `sod`
+
+```{r}
+# Modèle linéaire simple
+sod_linear <- coxph(Surv(d.time, death == 1) ~ sod, data = data_clean)
+
+# Logarithme
+sod_log <- coxph(Surv(d.time, death == 1) ~ log(sod), data = data_clean)
+
+# Terme quadratique
+data_clean$sodcarre <- data_clean$sod  + data_clean$sod^2
+fit2 <- coxph(Surv(d.time, death == 1) ~  sodcarre, data = data_clean)
+
+# Racine carrée
+data_clean$sodsqrt <- sqrt(data_clean$sod)
+sod_sqrt <- coxph(Surv(d.time, death == 1) ~ sodsqrt, data = data_clean)
+
+# Inverse
+data_clean$sodinv <- 1 / data_clean$sod
+sod_inv <- coxph(Surv(d.time, death == 1) ~ sodinv, data = data_clean)
+
+# Spline naturelle (3 degrés de liberté)
+sod_spline <- coxph(Surv(d.time, death == 1) ~ ns(sod, df = 3), data = data_clean)
+
+# Comparaison des AIC
+AIC(sod_linear, sod_log, fit2, sod_sqrt, sod_inv, sod_spline)
+```
+
+
+Although the spline transformation of the variable *sodium* yields the lowest AIC (AIC = 105299.0), this improvement comes at the cost of a notable increase in model complexity (three degrees of freedom). In comparison, the linear specification, with only one degree of freedom, results in a slightly higher AIC (105314.4), representing an acceptable trade-off between simplicity and model fit.
+
+Moreover, the simulated data structure is based on a linear effect of *sodium*, which supports retaining a linear form in the real-data analyses to ensure consistency between the simulated and empirical components of the study. This approach promotes coherent interpretation of the results while limiting the risk of overfitting.
+
+
+
+
+
+```{r}
+op <- par(mfrow=c(2,2))
+
+plot(r.martingale ~ data_clean$age,
+     col = "orange", pch = 19,cex = 0.3,  xlab = "Age", ylab = "Martingale Residuals of Null Cox Model",
+     main = "Martingale residuals vs Age", cex.main = 0.8,cex.lab = 0.8)
 smoothSEcurve(r.martingale, data_clean$age)
-```
 
+plot(r.martingale ~ data_clean$logage,
+     col = "gray", pch = 19, cex = 0.3, xlab = "Age", ylab = "Martingale Residuals of Null Cox Model",
+     main = "Martingale residuals vs log(Age)", cex.main = 0.8, cex.lab = 0.8)
+smoothSEcurve(r.martingale, data_clean$logage)
 
-
-
-```{r}
-plot(r.martingale~ data_clean$edu,col ="gray",  pch = 19,xlab = "edu", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs edu")
-smoothSEcurve(r.martingale, data_clean$edu)
-
-```
-
-
-```{r}
-plot(r.martingale~ data_clean$num.co,col ="gray",  pch = 19,xlab = "num.co", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs num.co")
-smoothSEcurve(r.martingale, data_clean$num.co)
-
-```
-
-```{r}
-plot(r.martingale~ data_clean$meanbp,col ="gray",  pch = 19,xlab = "meanbp", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs meanbp")
-smoothSEcurve(r.martingale, data_clean$meanbp)
-```
-
-
-```{r}
-plot(r.martingale~ data_clean$hrt,col ="gray",  pch = 19,xlab = "hrt", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs hrt")
-smoothSEcurve(r.martingale, data_clean$hrt)
-```
-
-
-
-
-```{r}
-plot(r.martingale~ data_clean$crea,col ="gray",  pch = 19,xlab = "crea", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs crea")
-smoothSEcurve(r.martingale, data_clean$crea)
-```
-
-
-
-```{r}
-plot(r.martingale~ data_clean$resp,col ="gray",  pch = 19,xlab = "resp", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs resp")
+plot(r.martingale ~ data_clean$resp,
+     col = "gray", pch = 19, cex = 0.3, xlab = "Resp", ylab = "Martingale Residuals of Null Cox Model",
+     main = "Martingale residuals vs resp", cex.main = 0.8, cex.lab = 0.8)
 smoothSEcurve(r.martingale, data_clean$resp)
-```
 
-```{r}
-
-plot(r.martingale~ data_clean$temp,col ="gray",  pch = 19,xlab = "temp", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs temp")
-smoothSEcurve(r.martingale, data_clean$temp)
-
-```
-
-```{r}
-plot(r.martingale~ data_clean$sod,col ="gray",  pch = 19,xlab = "sod", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs sod")
+plot(r.martingale ~ data_clean$sod,
+     col = "gray", pch = 19, cex = 0.3, xlab = "sod", ylab = "Martingale Residuals of Null Cox Model",
+     main = "Martingale residuals vs sod", cex.main = 0.8, cex.lab = 0.8)
 smoothSEcurve(r.martingale, data_clean$sod)
+par(op)
 ```
 
 
-```{r}
-plot(r.martingale~ data_clean$wblc,col ="gray",  pch = 19,xlab = "wblc", ylab = "Matingale Residuals of Null Cox Model", main = "Martingale residuals vs wblc")
-smoothSEcurve(r.martingale, data_clean$wblc)
-```
+## Proportional Hazards Assumption of the Cox Model
 
-
-
-## Approches graphiques des courbes `log-log`.
+### Graphical assessment using `log-log` survival curves for categorical variables
 
 
 
@@ -295,105 +403,101 @@ smoothSEcurve(r.martingale, data_clean$wblc)
 
 
 ```{r}
+op <- par(mfrow=c(1,2))
 log_log_sex <- survfit(Surv(d.time, death==1) ~ sex, data = data_clean)
 plot(log_log_sex, fun = "cloglog", col = 1:2, xlab = "years", ylab = "log-log(Survival)")
 title("log-log plot for sex (KM curve)")
 legend("topleft", legend = levels(data_clean$sex), col = 1:2, lty = 1)
 
-```
 
-
-
-```{r}
-log_log_dzgroup <- survfit(Surv(d.time, death == 1) ~ dzgroup, data = data_clean)
-
-plot(log_log_dzgroup, fun = "cloglog", 
-     col = 1:length(unique(data_clean$dzgroup)), 
-     xlab = "Time (in quarters, 3-month periods)", ylab = "log-log(Survival)")
-
-title("Log-log plot for dzgroup (KM curve)")
-
-legend("bottomright", legend = levels(data_clean$dzgroup), 
-       col = 1:length(unique(data_clean$dzgroup)), lty = 1)
-```
-
-
-
-```{r}
 log_log_income <- survfit(Surv(d.time, death == 1) ~ income, data = data_clean)
 
 plot(log_log_income, fun = "cloglog", 
-     col = 1:length(unique(data_clean$income)), 
+     col = 1:length(unique(data_clean$income)), cex = 0.5,
      xlab = "Time (in quarters, 3-month periods)", ylab = "log-log(Survival)")
 
-title("Log-log plot for income (KM curve)")
+title("Log-log plot for income (KM curve)",)
 
 legend("bottomright", legend = levels(data_clean$income), 
        col = 1:length(unique(data_clean$income)), lty = 1)
-
+par(op)
 ```
 
+PH semble  être vérifiée pour income
 
 
-```{r}
-log_log_race <- survfit(Surv(d.time, death == 1) ~ race, data = data_clean)
 
-plot(log_log_race, fun = "cloglog", 
-     col = 1:length(unique(data_clean$race)), 
-     xlab = "Time (in quarters, 3-month periods)", ylab = "log-log(Survival)")
-
-title("Log-log plot for race (KM curve)")
-
-legend("bottomright", legend = levels(data_clean$race), 
-       col = 1:length(unique(data_clean$race)), lty = 1)
-
-```
+## PH assumption in Cox model using the `cox.zph` function from the survival package
 
 
 
 
 ```{r}
 
-PH_data_clean <- coxph(Surv(d.time, death==1) ~ age + sex +  dzgroup + num.co + income +
-                         edu+ meanbp + hrt + crea +  sod  + temp +   wblc+ resp + race , data = data_clean)
+PH_data_clean <- coxph(Surv(d.time, death==1) ~  income + age + sex +sod + resp + age + logage    , data = data_clean)
 ```
 
 
 ```{r}
 reszphkm <- cox.zph(PH_data_clean)
 reszphkm
-
 ```
+
+
+
+### Checking the Proportional Hazards (PH) Assumption
+
+- **age**: marked violation of the PH assumption; including a time interaction (`tt(age)`) is recommended.  
+- **sex**: significant violation; stratification by `sex` is advised.  
+- **income**: PH assumption satisfied; no modification required.  
+- **resp**: moderate violation; should be monitored or modeled with caution.  
+- **sod**: PH assumption satisfied; no adjustment necessary.  
+- **GLOBAL**: the PH assumption is globally violated; adjustments are needed for the affected variables.
+
+
+### Selected Forms for Continuous Covariates
+
+- `age`: logarithmic transformation  
+- `sod`: linear form  
+- `resp`: linear form
+
+
+
 
 
 
 ```{r}
-op <- par(mfrow = c(2,3))
-plot(reszphkm[1:6,1:6],col = "blue")
+op <- par(mfrow = c(2, 3))  # oma = marges extérieures (haut = 3 lignes)
+
+plot(reszphkm, col = "blue", cex = 0.4, lwd = 2)
+
+mtext("Schoenfeld Residuals – PH Assumption Check", outer = TRUE, cex = 1, col = "darkblue")
+
 par(op)
 
+```
+
+
+```{r}
+data_clean <- data_clean[,c("d.time","death","age","logage","sex", "income", "sod", "resp", "R.income")]
 ```
 
 ```{r}
-op <- par(mfrow = c(2,3))
-plot(reszphkm[7:12,7:12],col = "blue")
-par(op)
+summary(data_clean)
 ```
 
 
-# Méthodes classiques
 
-## Completes cases analysis (MCAR)
+# Classical Methods
+
+## Complete Case Analysis (MCAR)
 
 
 
-```{r,warning=FALSE}
 
-mod.mcar <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +  
-    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
-    num.co + age +
-    num.co:d.time + age:d.time + 
-    strata(dzgroup), data = na.omit(data_clean))
+```{r}
+mod.mcar <- coxph(
+formula = Surv(d.time, death == 1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}, data = na.omit(data_clean))
 ```
 
 
@@ -441,7 +545,7 @@ extract_full_mcar_iwp <- function(cox_model) {
 
 ```{r}
 result.cc <- extract_full_mcar_iwp(mod.mcar)
-knitr::kable(round(result.cc[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result.cc,3))
 ```
 
 
@@ -450,26 +554,27 @@ knitr::kable(round(result.cc[c("income$11-$25k", "income$25-$50k", "income>$50k"
 
 
 
-## Approche sémi-paramétrique: inverse de la probabilité pondérée (MAR)
+## Semi-parametric approach: Inverse Probability Weighting (MAR)
 
-#Parmètre de compromis
+### Compromise parameter values used in the simulation study
+
 
 ```{r}
-# kappa = 1 
-#kappa = 0.95
-kappa = 0.9
+#kappa = 0.3 
+#kappa = 0.4
+kappa = 0.5
 ```
 
 
 ```{r}
 set.seed(312)
-work.model <- glm(R.income ~ d.time + death + age + sex +  sod +  temp +
-                    dzgroup + num.co + hrt +crea + meanbp, data = data_clean, family = binomial)
+work.model <- glm(R.income ~  death + age +   sod , data = data_clean, family = binomial)
 predicted <-  pmax(pmin(predict(work.model, type = "response"), 0.99), 0.01)
 ```
 
 
-# Poids pondéré pour les observations manquantes selon notre proposition
+# Inverse probability weights for missing observations under our proposed approach
+
 
 ```{r}
 data_clean$w_corrected <- ifelse(
@@ -479,76 +584,18 @@ data_clean$w_corrected <- ifelse(
 ```
 
 
-# Poids classique pour les observations manquantes selon  iwp standard
-
-```{r}
-data_clean$w_standard <- ifelse(
-  data_clean$R.income == 1,
-  1 / predicted, 
-  1 / (1-predicted))
-```
 
 
 
 ```{r}
-summary(data_clean[data_clean$R.income == 0, c("w_corrected", "w_standard")])
-
-summary(data_clean[data_clean$R.income == 1, c("w_corrected", "w_standard")])
-```
-
-
-
-# Disttribution du poids pondéré vs poids standard
-
-
-```{r}
-p1 <- ggplot(data_clean, aes(x = w_corrected, fill = factor(R.income))) +
-  geom_histogram(alpha = 0.5, bins = 30) +
-  scale_fill_manual(values = c("green", "blue"), labels = c("R.income = 0", "R.income = 1")) +
-  labs(title = "Histogram of Corrected Weight by Missing Income Indicator", 
-       x = "Weight", y = "Count", fill = "Weight") + 
-  theme_minimal(base_size = 10) +
-  facet_wrap(~ R.income, scales = "free", 
-             labeller = as_labeller(c("0" = "R.income = 0", "1" = "R.income = 1"))) +
-  theme(plot.title = element_text(hjust = 0.5, size = 10, face = "bold"))
-
-
-p2 <- ggplot(data_clean, aes(x = w_standard, fill = factor(R.income))) +
-  geom_histogram(alpha = 0.5, bins = 30) +
-  scale_fill_manual(values = c("orange", "blue"), labels = c("R.income = 0", "R.income = 1")) +
-  labs(title = "Histogram of Standard Weight by Missing Income Indicator", 
-       x = "Weight", y = "Count", fill = "Weight") + 
-  theme_minimal(base_size = 10) +
-  facet_wrap(~ R.income, scales = "free", 
-             labeller = as_labeller(c("0" = "R.income = 0", "1" = "R.income = 1"))) +
-  theme(plot.title = element_text(hjust = 0.5, size = 10, face = "bold"))
-
-
-
-gridExtra::grid.arrange(grobs = list( p1,  p2), nrow = 2)
-
-
-```
-
-
-
-
-
-
-```{r,warning=FALSE}
-mod.iwp <- coxph(formula = Surv(d.time, death == 1) ~ income + sex + sod +  
-    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +
-    num.co + age +
-    num.co:d.time + age:d.time + 
-    strata(dzgroup), data = na.omit(data_clean), 
-                weights = w_corrected,robust = TRUE)
+mod.iwp <- coxph(formula = Surv(d.time, death == 1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}, data = na.omit(data_clean),  weights = w_corrected,robust = TRUE)
 ```
 
 
 
 ```{r}
 result.iwp <- extract_full_mcar_iwp(mod.iwp)
-knitr::kable(round(result.iwp[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result.iwp,3))
 ```
 
 
@@ -557,7 +604,8 @@ knitr::kable(round(result.iwp[c("income$11-$25k", "income$25-$50k", "income>$50k
 
 
 
-## Imputation paramétrique (MAR)
+## Parametric Imputation (MAR)
+
 
 
 
@@ -572,19 +620,20 @@ data_clean$cumhaz[!is.na(time_indices)] <- fit$cumhaz[time_indices[!is.na(time_i
 ```
 
 
-# Nombre d'imputation
+# Number of Imputations
+
 
 ```{r}
-M = 50
+M = 10
 ```
  
 
 ```{r}
 mice_P_data <- mice(
-  data= data_clean[,c("cumhaz", "death", "age","sex","income","sod","dzgroup","num.co","hrt","wblc","temp","crea","meanbp")],  
+  data= data_clean[,c("cumhaz", "death", "logage","sex","income","sod","resp")],  
   m = M,         
   maxit = 5,      
-  method = c("norm","logreg","norm", "logreg", "polyreg", "norm", "polyreg","norm","norm","norm","norm","norm","norm"),
+  method = c("norm","logreg","norm", "logreg", "polyreg", "norm", "norm"),
   print = FALSE,
   seed = 10000
 )
@@ -597,7 +646,7 @@ mice_P_data <- mice(
 
 ```{r}
 mice_P_data <-  lapply(1:M, function(m) {
-  cbind(data_clean[,c("d.time","sqrt_crea","temp2","meanbp2","hrt2")], mice::complete(mice_P_data, m))
+  cbind(d.time =data_clean$d.time, mice::complete(mice_P_data, m))
 })
 mice_P_data <- mitml::as.mitml.list(mice_P_data)
 ```
@@ -606,15 +655,14 @@ mice_P_data <- mitml::as.mitml.list(mice_P_data)
 
 
 
-```{r,warning=FALSE}
-miceP.model <- with(mice_P_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                            temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time + 
-                                            strata(dzgroup)))
+```{r}
+miceP.model <- with(mice_P_data, coxph(Surv(d.time, death ==1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}))
 
 ```
 
 
-## Fonction qui combine les résulats selon la règle de Rubin
+## Function to Combine Results Using Rubin's Rules
+
 
 
 ```{r}
@@ -682,7 +730,7 @@ combine_MI <- function(manyresult) {
 result_miceP.est <- combine_MI(miceP.model)
 result_miceP.est[,"CI_width"] <- result_miceP.est[,"upper.95"] - result_miceP.est[,"lower.95"]
 rownames(result_miceP.est) <- rownames(result.cc)
-knitr::kable(round(result_miceP.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result_miceP.est,3))
 ```
 
 
@@ -695,17 +743,18 @@ knitr::kable(round(result_miceP.est[c("income$11-$25k", "income$25-$50k", "incom
 
 
 
-## Imputation multiple non paramétrique (MAR)
+## Non-Parametric Multiple Imputation (MAR)
+
 
 
 
 
 ```{r}
 rf_NP_data <- mice(
-  data= data_clean[,c("d.time", "death", "age","sex","income","sod","dzgroup","num.co","hrt","wblc","temp","crea","meanbp")],  
+  data= data_clean[,c("cumhaz", "death", "logage","sex","income","sod","resp")],  
   m = M,         
   maxit = 5,      
-  method = c("rf", "rf", "rf", "rf", "rf", "rf","rf","rf","rf","rf","rf","rf","rf"),
+  method = c("rf", "rf", "rf", "rf", "rf", "rf","rf"),
   print = FALSE,
   seed = 10000
 )
@@ -715,7 +764,7 @@ rf_NP_data <- mice(
 
 ```{r}
 rf_NP_data <-  lapply(1:M, function(m) {
-  cbind(data_clean[,c("d.time","sqrt_crea","temp2","meanbp2","hrt2")], mice::complete(rf_NP_data, m))
+  cbind(d.time =data_clean$d.time, mice::complete(rf_NP_data, m))
 })
 rf_NP_data <- mitml::as.mitml.list(rf_NP_data)
 ```
@@ -724,9 +773,8 @@ rf_NP_data <- mitml::as.mitml.list(rf_NP_data)
 
 
 
-```{r,warning=FALSE}
-rfNP.model <-  with(rf_NP_data, coxph(Surv(d.time, death ==1) ~  income + sex + sod +  
-                                        temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age +  num.co:d.time + age:d.time + strata(dzgroup)))
+```{r}
+rfNP.model <-  with(rf_NP_data, coxph(Surv(d.time, death ==1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}))
 
 ```
 
@@ -738,7 +786,7 @@ rfNP.model <-  with(rf_NP_data, coxph(Surv(d.time, death ==1) ~  income + sex + 
 result_rfNP.est <- combine_MI(rfNP.model)
 result_rfNP.est[,"CI_width"] <- result_rfNP.est[,"upper.95"] - result_rfNP.est[,"lower.95"]
 rownames(result_rfNP.est) <- rownames(result.cc)
-knitr::kable(round(result_rfNP.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result_rfNP.est,3))
 ```
 
 
@@ -747,9 +795,9 @@ knitr::kable(round(result_rfNP.est[c("income$11-$25k", "income$25-$50k", "income
 
 
 
-# Méthodes hybrides 
+# Hybrid Methods
 
-## Hybride 1: MI paramétrique et MI non paramétrique (MAR)
+## Hybrid 1: Parametric and Non-Parametric Multiple Imputation (MAR)
 
 
 ```{r}
@@ -765,9 +813,8 @@ P_NP_data <- mitml::as.mitml.list(P_NP_data)
 
 
 
-```{r,warning=FALSE}
-P_NP_mod <- with(P_NP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time + strata(dzgroup)))
+```{r}
+P_NP_mod <- with(P_NP_data, coxph(Surv(d.time, death ==1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t}))
 ```
 
 
@@ -777,7 +824,7 @@ P_NP_mod <- with(P_NP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +
 result_P_NP.est <- combine_MI(P_NP_mod)
 result_P_NP.est[,"CI_width"] <- result_P_NP.est[,"upper.95"] - result_P_NP.est[,"lower.95"]
 rownames(result_P_NP.est) <- rownames(result.cc)
-knitr::kable(round(result_P_NP.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result_P_NP.est,3))
 ```
 
 
@@ -785,13 +832,14 @@ knitr::kable(round(result_P_NP.est[c("income$11-$25k", "income$25-$50k", "income
 
 
 
-## Hybride 2: MI paramétrique et IWP (MAR)
+## Hybrid 2: Parametric MI and IPW (MAR)
+
 
 
 ```{r}
 
 MI.P_IWP_data <-  lapply(1:M, function(m) {
-  cbind(mice_P_data[[m]], data_clean[, c("sqrt_crea","temp2","meanbp2","hrt2", "R.income", "w_corrected", "w_standard")])
+  cbind(mice_P_data[[m]], data_clean[, c( "R.income", "w_corrected")])
 })
 
 MI.P_IWP_data <- mitml::as.mitml.list(MI.P_IWP_data)
@@ -801,17 +849,15 @@ MI.P_IWP_data <- mitml::as.mitml.list(MI.P_IWP_data)
 
 
 
-```{r,warning=FALSE}
-MI.P_IWP_mod <- with(MI.P_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                            temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea +  num.co + age + num.co:d.time + age:d.time + strata(dzgroup)
-                                          ,weights = w_corrected, robust = TRUE))
+```{r}
+MI.P_IWP_mod <- with(MI.P_IWP_data, coxph(Surv(d.time, death ==1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t},weights = w_corrected, robust = TRUE))
 ```
 
 ```{r}
 result_P_iwp.est <- combine_MI(MI.P_IWP_mod)
 result_P_iwp.est[,"CI_width"] <- result_P_iwp.est[,"upper.95"] - result_P_iwp.est[,"lower.95"]
 rownames(result_P_iwp.est) <- rownames(result.cc)
-knitr::kable(round(result_P_iwp.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result_P_iwp.est,3))
 ```
 
 
@@ -820,13 +866,13 @@ knitr::kable(round(result_P_iwp.est[c("income$11-$25k", "income$25-$50k", "incom
 
 
 
-## Hybride 3:  MI non paramétrique et IWP (MAR)
+## Hybride 3:  MI non-parametric et IWP (MAR)
 
 
 
 ```{r}
 MI.NP_IWP_data <-  lapply(1:M, function(m) {
-  cbind(rf_NP_data[[m]], data_clean[, c("sqrt_crea","temp2","meanbp2","hrt2","R.income", "w_corrected", "w_standard")])
+  cbind(rf_NP_data[[m]], data_clean[, c("R.income", "w_corrected")])
 })
 
 MI.NP_IWP_data <- mitml::as.mitml.list(MI.NP_IWP_data)
@@ -836,9 +882,8 @@ MI.NP_IWP_data <- mitml::as.mitml.list(MI.NP_IWP_data)
 
 
 
-```{r,warning=FALSE}
-MI.NP_IWP_mod <-  with(MI.NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time + strata(dzgroup),
+```{r}
+MI.NP_IWP_mod <-  with(MI.NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t},
                                              weights = w_corrected, robust = TRUE))
 ```
 
@@ -848,7 +893,7 @@ MI.NP_IWP_mod <-  with(MI.NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + 
 result_NP_iwp.est <- combine_MI(MI.NP_IWP_mod)
 result_NP_iwp.est[,"CI_width"] <- result_NP_iwp.est[,"upper.95"] - result_NP_iwp.est[,"lower.95"]
 rownames(result_NP_iwp.est) <- rownames(result.cc)
-knitr::kable(round(result_NP_iwp.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result_NP_iwp.est,3))
 ```
 
 
@@ -858,14 +903,14 @@ knitr::kable(round(result_NP_iwp.est[c("income$11-$25k", "income$25-$50k", "inco
 
 
 
+## Hybrid 4: Parametric MI, Nonparametric MI, and IPW (MAR)
 
-## Hybride 4: MI paramétrique, MI non paramétrique et IWP (MAR)
 
 
 
 ```{r}
 P_NP_IWP_data <- lapply(1:M, function(m){
-  cbind(P_NP_data[[m]],data_clean[, c("sqrt_crea","temp2","meanbp2","hrt2","R.income", "w_corrected", "w_standard")])
+  cbind(P_NP_data[[m]],data_clean[, c("R.income", "w_corrected")])
 })
 P_NP_IWP_data <- mitml::as.mitml.list(P_NP_IWP_data)
 ```
@@ -873,9 +918,8 @@ P_NP_IWP_data <- mitml::as.mitml.list(P_NP_IWP_data)
 
 
 
-```{r,warning=FALSE}
-P_NP_IWP_mod <- with(P_NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex + sod +  
-                                    temp + temp2 + meanbp + meanbp2 + hrt + hrt2 + crea + sqrt_crea + num.co + age + num.co:d.time + age:d.time +  strata(dzgroup),
+```{r}
+P_NP_IWP_mod <- with(P_NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + resp + sod + tt(logage) + strata(sex),tt = function(x, t, ...) {x * t},
                                       weights = w_corrected, robust = TRUE))
 ```
 
@@ -885,11 +929,58 @@ P_NP_IWP_mod <- with(P_NP_IWP_data, coxph(Surv(d.time, death ==1) ~ income + sex
 result_P_NP_iwp.est <- combine_MI(P_NP_IWP_mod)
 result_P_NP_iwp.est[,"CI_width"] <- result_P_NP_iwp.est[,"upper.95"] - result_P_NP_iwp.est[,"lower.95"]
 rownames(result_P_NP_iwp.est) <- rownames(result.cc)
-knitr::kable(round(result_P_NP_iwp.est[c("income$11-$25k", "income$25-$50k", "income>$50k","sexmale","age","num.co","crea","hrt","temp","sod","meanbp"),],3))
+knitr::kable(round(result_P_NP_iwp.est,3))
 ```
 
 
 
+```{r}
+all_estimate <- data.frame(
+                           CC = result.cc[,"exp(coef)"],
+                           Iwp = result.iwp[,"exp(coef)"],
+                           Mice.P = result_miceP.est[,"exp(coef)"],
+                           RF.NP = result_rfNP.est[,"exp(coef)"],
+                           Hybrid1 = result_P_NP.est[,"exp(coef)"],
+                           Hybrid2 = result_P_iwp.est[,"exp(coef)"],
+                           Hybrid3 = result_NP_iwp.est[,"exp(coef)"],
+                           Hybrid4 = result_P_NP_iwp.est[,"exp(coef)"])
+rownames(all_estimate) <- rownames(result.cc)
+
+knitr::kable(round(all_estimate, 4))
+```
+
+
+```{r}
+all_lower.95 <- data.frame(
+  CC = result.cc[,"lower.95"],
+  Iwp = result.iwp[,"lower.95"],
+  Mice.P = result_miceP.est[,"lower.95"],
+  RF.NP = result_rfNP.est[,"lower.95"],
+  Hybrid1 = result_P_NP.est[,"lower.95"],
+  Hybrid2 = result_P_iwp.est[,"lower.95"],
+  Hybrid3 = result_NP_iwp.est[,"lower.95"],
+  Hybrid4 = result_P_NP_iwp.est[,"lower.95"])
+rownames(all_lower.95) <- rownames(result.cc)
+
+knitr::kable(round(all_lower.95, 4))
+```
+
+
+
+```{r}
+all_upper.95 <- data.frame(
+  CC = result.cc[,"upper.95"],
+  Iwp = result.iwp[,"upper.95"],
+  Mice.P = result_miceP.est[,"upper.95"],
+  RF.NP = result_rfNP.est[,"upper.95"],
+  Hybrid1 = result_P_NP.est[,"upper.95"],
+  Hybrid2 = result_P_iwp.est[,"upper.95"],
+  Hybrid3 = result_NP_iwp.est[,"upper.95"],
+  Hybrid4 = result_P_NP_iwp.est[,"upper.95"])
+rownames(all_upper.95) <- rownames(result.cc)
+
+knitr::kable(round(all_upper.95, 4))
+```
 
 
 ```{r}
@@ -899,5 +990,3 @@ code_time
 
 # sink()
 ```
-
-
