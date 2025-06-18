@@ -12,8 +12,6 @@ date: "`r Sys.Date()`"
 
 ### Simulation: Bias of Hybrid Methods under a Linear Relationship
 
-The simulation scheme presented in this section is **inspired by Van Buuren (2018)**, notably from his book *Flexible Imputation of Missing Data*. The goal is to generate a set of simple linear datasets with missing values on the response variable under a controlled MAR mechanism.
-
 #### Generation of Complete Data
 
 We consider a simple linear model with a single covariate \(X\), simulated from a standard normal distribution. The response variable \(Y\) is generated as follows:
